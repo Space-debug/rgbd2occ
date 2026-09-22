@@ -10,18 +10,18 @@ rgbd2occ/
 ├── main.py                  # 主生成程序: python main.py <数据集> <产物> [参数...]
 ├── common/                  # 工具类库: 跨数据集、跨产物共用
 │   ├── io.py                #   数据读取: 深度/标签加载与格式归一 (米制/uint8)
-│   ├── depth_filter.py      #   深度域滤波: 5x5 中值 + 梯度剔除 (stage1)
+│   ├── projection.py        #   通用相机几何: deproject(含k1/k2畸变) + cam_to_ego_axes 轴变换
+│   ├── depth_filter.py      #   深度预处理: 5x5 中值+梯度剔除 (stage1) / 有效性掩膜 mask_depth
 │   ├── point_filter.py      #   点云滤波: SOR 半径 + 体素斑点 (stage2/3)
 │   └── pointcloud.py        #   depth_to_points 编排 + 体素降采样 + nuScenes bin 写出
 ├── nuscenes/                # nuScenes devkit 格式核心
 │   └── tables.py            #   稳定 token(md5) + 13 张表落盘
 ├── occ/                     # Occ3D 占据标注核心
-│   ├── preprocess.py        #   深度有效性掩膜
-│   ├── projection.py        #   几何投影 (含 k1/k2 径向畸变)
-│   ├── voxel_grid.py        #   官方自车系 X前/Y左/Z上 网格
+│   ├── voxel_grid.py        #   官方自车系网格 X前/Y左/Z上 (整除截断, 200x200x16)
 │   ├── raycast.py           #   向量化 DDA 射线追踪
 │   ├── convert.py           #   convert_frame 三态编码
 │   └── annotations.py       #   annotations.json (mini 同构)
+│   (几何投影/深度预处理在 common/ —— 两条产物线共用; 相机->自车轴变换全库仅 common.projection 一份)
 ├── datasets/                # ★ 数据集适配器 (每种数据集一个目录)
 │   ├── __init__.py          #   注册表 DATASETS = {名: {产物: (模块, 入口)}}
 │   └── sunrgbd/

@@ -8,7 +8,7 @@
 """
 import numpy as np
 
-from .projection import deproject
+from common.projection import deproject
 from .raycast import cast_rays
 from .voxel_grid import make_grid, to_grid
 

@@ -10,6 +10,7 @@ stage1 深度滤波 -> 反投影(自车系) -> stage2 SOR -> stage3 体素斑点
 import numpy as np
 
 from .depth_filter import median_gradient
+from .projection import cam_to_ego_axes
 from .point_filter import sor_radius, voxel_speckle
 
 
@@ -23,7 +24,8 @@ def deproject_filtered(depth, fx, cx, cy, fy=None, dmin=0.3, dmax=8.0):
     m = np.isfinite(depth) & (depth > dmin) & (depth < dmax)
     z = depth[m].astype(np.float64)
     xd, yd = (u[m] - cx) / fx, (v[m] - cy) / fy
-    P = np.stack([z, -(xd * z), -(yd * z)], 1)
+    # 相机系 -> 自车系 (共用轴变换; 纯取负/重排, 与 v2 逐位一致)
+    P = cam_to_ego_axes(np.stack([xd * z, yd * z, z], 1))
     return P, m
 
 

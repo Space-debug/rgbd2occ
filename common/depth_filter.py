@@ -15,3 +15,14 @@ def median_gradient(depth, valid, dmin=0.3, grad_thr=0.05):
     gy, gx = np.gradient(np.where(d1 > dmin, d1, np.nan))
     g = np.sqrt(gy * gy + gx * gx)
     return np.where((d1 > dmin) & (np.nan_to_num(g) < grad_thr), d1, 0)
+
+
+def mask_depth(depth, valid_range=None, fill=0.0):
+    """把有效区间外的深度(0=无效、超量程噪声)置为 fill, 返回新数组。
+    valid_range=None 表示不过滤。典型: SUN RGB-D 管线用 (0.3, 8.0)。
+    (自 occ/preprocess.py 移入 —— 通用深度预处理, 非 occ 专属。)"""
+    if valid_range is None:
+        return depth
+    d = depth.copy()
+    d[(d < valid_range[0]) | (d > valid_range[1])] = fill
+    return d

@@ -9,6 +9,8 @@
 """
 import numpy as np
 
+from common.projection import cam_to_ego_axes  # noqa: F401 (共用轴变换, 此处重导出)
+
 
 def make_grid(voxel, x_range=(-40, 40), y_range=(-40, 40), z_range=(-1, 5.4)):
     """返回网格原点 gmin(=各轴下界) 与维度 dims。"""
@@ -16,15 +18,6 @@ def make_grid(voxel, x_range=(-40, 40), y_range=(-40, 40), z_range=(-1, 5.4)):
     dims = np.floor((np.array([x_range[1], y_range[1], z_range[1]]) - gmin)
                     / voxel).astype(int)
     return gmin, tuple(int(d) for d in dims)
-
-
-def cam_to_ego_axes(pts_cam):
-    """(N,3) 相机系坐标 -> 自车系坐标 (只做轴重排/取反, 不平移)。"""
-    g = np.empty_like(pts_cam)
-    g[:, 0] = pts_cam[:, 2]
-    g[:, 1] = -pts_cam[:, 0]
-    g[:, 2] = -pts_cam[:, 1]
-    return g
 
 
 def to_grid(pts_cam, gmin, voxel, dims):
