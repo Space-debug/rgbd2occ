@@ -132,10 +132,10 @@ def _points_gpu_tensors(raw_u16, img, scale, fx, fy, cx, cy, dmin=0.3, dmax=8.0)
                      torch.zeros_like(d1))
     P, m = deproject_gpu(d1, fx, fy, cx, cy, dmin, dmax)
     C = torch.tensor(img.reshape(-1, 3), device=dev)[m.reshape(-1)]
-    keep = sor_gpu(P, C)
+    keep = sor_gpu(P)                                      # C 不参与 SOR 决策
     P, C = P[keep], C[keep]
     G = torch.stack([-P[:, 1], P[:, 0], P[:, 2]], 1)      # ego -> 网格(X右,Y前,Z上)
-    keep = speckle_gpu(G, C)
+    keep = speckle_gpu(G)
     G3 = G[keep]
     P = torch.stack([G3[:, 1], -G3[:, 0], G3[:, 2]], 1)   # 网格 -> ego (逆变换)
     C = C[keep]

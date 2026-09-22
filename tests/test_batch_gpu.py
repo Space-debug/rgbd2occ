@@ -69,3 +69,30 @@ def test_batch_vs_cpu_exact_small_diff():
         md += int((b[0].astype(np.uint8) != r["mask_camera"]).sum())
     assert sd / tot < 0.005, f"语义差异 {sd/tot:.3%} 超容差"
     assert md / tot < 0.005, f"mask 差异 {md/tot:.3%} 超容差"
+
+
+def test_gpu_pointcloud_nearest_neighbor():
+    """GPU 点云线 vs 生产 bin: 最近邻中位 < 1cm (arg 错位/轴互换类 bug 的哨兵)。"""
+    import json
+    from scipy.spatial import cKDTree
+    if not _torch_cuda():
+        return
+    from common.gpu_points import depth_to_points_downsampled_gpu
+    intr = json.load(open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "..", "..", "sunrgbd_nuscenes_v3", "intrinsics_per_frame.json")))
+    raw = np.array(Image.open(os.path.join(DATA, "1.png")))
+    img = np.array(Image.open(os.path.join(DATA, "img-000001.jpg")).convert("RGB"))
+    K = intr["train/img-000001"]["K_native"]
+    os.environ["RGBD2OCC_BACKEND"] = "gpu"
+    try:
+        P, C = depth_to_points_downsampled_gpu(
+            raw, img, 1 / 6553.5, K[0][0], K[1][1], K[0][2], K[1][2], 0.03)
+    finally:
+        os.environ["RGBD2OCC_BACKEND"] = "exact"
+    ref_p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "golden", "img-000001.pcd.bin")
+    ref = np.fromfile(ref_p, np.float32).reshape(-1, 5)[:, :3]
+    d, _ = cKDTree(ref).query(P, k=1)
+    assert np.median(d) < 0.01, f"GPU 点云偏移: 最近邻中位 {np.median(d)*100:.2f} cm"
+    assert abs(len(P) - len(ref)) / len(ref) < 0.02, "点数偏差超 2%"
