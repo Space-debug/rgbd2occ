@@ -21,8 +21,14 @@ def token(key):
 
 
 def write_tables(ver_dir, tables):
-    """把 {表名: 行列表} 写成 <ver_dir>/<表名>.json (indent=1, 同 v3)。"""
+    """把 {表名: 行列表} 写成 <ver_dir>/<表名>.json (indent=1, 同 v3)。
+    sample_annotation/instance 属检测线产物: 已有非空内容时不覆盖
+    (并行编排下 nuscenes 表重建不得清空检测填充)。"""
     os.makedirs(ver_dir, exist_ok=True)
     for name in NU_TABLES:
-        with open(os.path.join(ver_dir, name + ".json"), "w", encoding="utf-8") as f:
+        p = os.path.join(ver_dir, name + ".json")
+        if (name in ("sample_annotation", "instance")
+                and os.path.exists(p) and os.path.getsize(p) > 4):
+            continue
+        with open(p, "w", encoding="utf-8") as f:
             json.dump(tables.get(name, []), f, indent=1)
