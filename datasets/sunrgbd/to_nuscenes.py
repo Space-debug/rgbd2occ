@@ -118,13 +118,15 @@ def process_frame(job):
             shutil.copy2(r["img"], img_dst)
         if os.path.exists(bin_dst):
             return key, "skip", "", os.path.getsize(bin_dst) // 20   # float32 x 5
-        dep = load_depth(r["dep"], DEPTH_SCALE)
+        raw = np.array(Image.open(r["dep"]))
+        dep = raw.astype(np.float64) * DEPTH_SCALE
         img = np.array(Image.open(r["img"]).convert("RGB"))
         if dep.shape != img.shape[:2]:   # 深度网格为准, RGB 重采样对齐
             img = np.array(Image.open(r["img"]).convert("RGB")
                            .resize((dep.shape[1], dep.shape[0])))
         K = r["K_native"]
-        P, C = depth_to_points(img, dep, K[0][0], K[0][2], K[1][2])
+        P, C = depth_to_points(img, dep, K[0][0], K[0][2], K[1][2],
+                              raw=raw, scale=DEPTH_SCALE)
         if DOWNSAMPLE_VOX and len(P):
             P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64), DOWNSAMPLE_VOX)
         os.makedirs(os.path.dirname(bin_dst), exist_ok=True)

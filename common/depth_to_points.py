@@ -7,12 +7,13 @@ from .sor_radius import sor_radius
 from .voxel_speckle import voxel_speckle
 
 
-def depth_to_points(img, depth, fx, cx, cy, fy=None):
+def depth_to_points(img, depth, fx, cx, cy, fy=None, raw=None, scale=None):
     """单帧 RGB+深度 -> 自车系点云与颜色 (stage0-3 全流程)。
-    img/depth 同形 (H,W[,3]); 返回 (P (N,3) float64, C (N,3) uint8)。"""
+    img/depth 同形 (H,W[,3]); raw/scale 为原始 uint16 深度与缩放系数,
+    提供时启用 median_gradient 的 cv2 整数域快路径; 返回 (P, C)。"""
     fy = fx if fy is None else fy
     valid0 = (depth > 0.3) & (depth < 8)
-    d1 = median_gradient(depth, valid0)
+    d1 = median_gradient(depth, valid0, raw=raw, scale=scale)
     P, m = deproject_filtered(d1, fx, cx, cy, fy)
     C = img[m].astype(np.uint8)
     if len(P) == 0:

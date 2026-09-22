@@ -85,3 +85,19 @@ def test_occ_labels_golden_kv1():
     ref = np.load(os.path.join(GOLDEN, "occ_kv1_labeled.npz"))
     for k in ["semantics", "mask_lidar", "mask_camera"]:
         assert np.array_equal(res[k], ref[k]), f"{k} 与 kv1 带标签 golden 不一致"
+
+
+def test_median_cv2_path_bit_exact():
+    """cv2 整数域快路径与 numpy 路径逐位一致 (cv2 大版本升级时此测试兜底)。"""
+    import numpy as np
+    from PIL import Image
+    from common.median_gradient import _cv2_available, median_gradient
+    if not _cv2_available():
+        return
+    raw = np.array(Image.open(os.path.join(DATA, "1.png")))
+    scale = 1.0 / 6553.5
+    dep = raw.astype(np.float64) * scale
+    valid = (dep > 0.3) & (dep < 8)
+    a = median_gradient(dep, valid)
+    b = median_gradient(dep, valid, raw=raw, scale=scale)
+    assert np.array_equal(a, b), "cv2 整数域路径与 numpy 路径出现偏差!"
