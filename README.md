@@ -35,8 +35,10 @@ rgbd2occ/
 │   ├── __init__.py          #   注册表 DATASETS = {名: {产物: (模块, 入口)}}
 │   └── sunrgbd/
 │       ├── meta.py          #   原始数据读取: SUNRGBDMeta.mat -> 逐帧真实内参
+│       ├── labels.py        #   13 类语义标签 (路径/映射/occ 语义约定)
 │       ├── to_nuscenes.py   #   → nuScenes devkit (点云+图像+13张表)
-│       └── to_occ.py        #   → Occ3D 占据标注 (批量+单帧)
+│       ├── to_occ.py        #   → Occ3D 占据标注 (批量+单帧)
+│       └── fill_detection.py#   → 3D 检测标注 (groundtruth3DBB 填 sample_annotation)
 └── README.md
 ```
 
@@ -118,3 +120,8 @@ Occ3D 占据标注（to_occ, 与 Occupancy3D-nuScenes-v1.0-mini 同构）:
 ```
 关键约定: 轴序=自车系 X前/Y左/Z上; 未知=mask==0(语义名义 17); 位姿无真值置空 null;
 帧链 prev/next 首尾 "EOF"; 体素 0.4m, (200,200,16)。
+
+深度尺度: **/6553.5** (已用椅高物理检验钉死: 实测高/框高中位 1.00;
+官方 toolbox 的 /8000 位运算解码不适用于本数据分发版, 勿改)。
+3D 框坐标链路: groundtruth3DBB 在 Rtilt 重力对齐系,
+p_ego = M^T Rtilt^T p_grav (M 见 fill_detection.py, 源码+椅高双重验证)。

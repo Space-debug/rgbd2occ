@@ -6,11 +6,13 @@ to_nuscenes.py / to_occ.py 两条转换线), 然后在此登记一行。
 主程序 main.py 按注册表调度, 核心库(common/occ/nuscenes)不需改动。
 """
 from . import sunrgbd
+from .sunrgbd import fill_detection
 
 # {数据集: {产物: (模块, 入口函数)}}
 DATASETS = {
     "sunrgbd": {
         "nuscenes": ("datasets.sunrgbd.to_nuscenes", "main"),
         "occ": ("datasets.sunrgbd.to_occ", "main"),
+        "detection": ("datasets.sunrgbd.fill_detection", "main"),
     },
 }

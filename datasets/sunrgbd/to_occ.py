@@ -37,6 +37,7 @@ import numpy as np
 
 from occ import convert_frame, load_depth, load_label, mask_depth, OccAnnotations, pose
 from common.get_logger import get_logger
+from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
 from common.write_manifest import write_manifest
 from config import dataset_paths
@@ -189,6 +190,41 @@ def run_batch(args):
     return rc
 
 
+
+
+def run_inspect(args):
+    """渲染指定/警告帧的 BEV 质检图 -> <out-root>/inspect/<token>.png"""
+    import re as _re
+    out_root = args.out_root or PATHS["occ_out"]
+    targets = [args.inspect] if args.inspect else []
+    if args.inspect_warned:
+        qp = os.path.join(out_root, "qc_report.json")
+        if not os.path.exists(qp):
+            log.error("缺少 qc_report.json (先跑一次批量转换)")
+            return 1
+        for w in json.load(open(qp, encoding="utf-8"))["warnings"]:
+            m = _re.search(r"([0-9a-f]{32})", w)
+            if m:
+                targets.append(m.group(1))
+    ann = json.load(open(os.path.join(out_root, "annotations.json"), encoding="utf-8"))
+    idx = {t: (s, e) for s, fr in ann["scene_infos"].items() for t, e in fr.items()}
+    os.makedirs(os.path.join(out_root, "inspect"), exist_ok=True)
+    n = 0
+    for tok in targets:
+        if tok not in idx:
+            log.warning("token 未登记: %s", tok)
+            continue
+        s, e = idx[tok]
+        p = os.path.join(out_root, e["gt_path"])
+        with np.load(p) as d:
+            vis = int((d["mask_camera"] > 0).sum())
+            render_occ_bev(d["semantics"], d["mask_camera"],
+                           os.path.join(out_root, "inspect", tok + ".png"),
+                           title="%s/%s vis=%d" % (s, tok[:8], vis))
+        n += 1
+    log.info("inspect: %d 张 -> %s", n, os.path.join(out_root, "inspect"))
+    return 0
+
 # ---------------- 单帧模式 ----------------
 
 def run_single(args):
@@ -232,6 +268,9 @@ def main(argv=None):
     ap.add_argument("--no-labels", action="store_true",
                     help="不接入 13 类语义标签 (占据记 others=0)")
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
+    ap.add_argument("--inspect", default=None, help="渲染指定 token 的 BEV 质检图后退出")
+    ap.add_argument("--inspect-warned", action="store_true",
+                    help="渲染 qc_report 中所有警告帧的 BEV 质检图后退出")
     # 单帧参数
     ap.add_argument("depth", nargs="?", help="[single] 深度图路径")
     ap.add_argument("--fx", type=float), ap.add_argument("--fy", type=float)
@@ -258,6 +297,9 @@ def main(argv=None):
     ap.add_argument("--k1", type=float, default=0.0)
     ap.add_argument("--k2", type=float, default=0.0)
     args = ap.parse_args(argv)
+
+    if getattr(args, "inspect", None) or getattr(args, "inspect_warned", False):
+        sys.exit(run_inspect(args))
 
     if args.mode == "single":
         need = ["depth", "fx", "fy", "cx", "cy", "scene", "token"]

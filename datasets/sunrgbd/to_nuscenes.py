@@ -35,6 +35,7 @@ from PIL import Image
 from common import depth_to_points, load_depth, voxel_downsample, write_nuscenes_bin
 from common.get_logger import get_logger
 from common.run_qc import run_qc
+from common.render_bev import render_points_bev
 from common.write_manifest import write_manifest
 from nuscenes import token, write_tables
 from .meta import load_meta
@@ -247,8 +248,19 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--tables-only", action="store_true", help="只重建表(用已有 meta 缓存)")
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
+    ap.add_argument("--inspect", default=None, metavar="SPLIT/NAME",
+                    help="渲染指定帧点云 BEV (如 train/img-000001) 后退出")
     args = ap.parse_args(argv)
     out = args.out or PATHS["nuscenes_out"]
+    if args.inspect:
+        split, name = args.inspect.split("/", 1)
+        p = os.path.join(out, "samples", "LIDAR_TOP", split, name + ".pcd.bin")
+        pts = np.fromfile(p, np.float32).reshape(-1, 5)
+        os.makedirs(os.path.join(out, "inspect"), exist_ok=True)
+        render_points_bev(pts, os.path.join(out, "inspect", "%s-%s.png" % (split, name)),
+                          title="%s/%s n=%d" % (split, name, len(pts)))
+        log.info("inspect -> %s", os.path.join(out, "inspect"))
+        sys.exit(0)
     frames = set(int(x) for x in args.frames.split(",") if x.strip()) if args.frames else None
 
     recs = prepare_frames(args.splits, args.limit, frames, out, args.raw_root)
