@@ -138,60 +138,57 @@ def _triton_fn():
         @triton.jit
         def _dda(o_x, o_y, o_z, dirs_ptr, dists_ptr, free_ptr,
                  voxel, d0, d1, d2, BLOCK: tl.constexpr):
-            pid = tl.program_id(0)
-            base = pid * BLOCK
-            for b in range(BLOCK):
-                i = base + b
-                dx = tl.load(dirs_ptr + i * 3 + 2)
-                dy = -tl.load(dirs_ptr + i * 3 + 0)
-                dz = -tl.load(dirs_ptr + i * 3 + 1)
-                dist = tl.load(dists_ptr + i) / voxel
-                norm = tl.sqrt(dx * dx + dy * dy + dz * dz) + 1e-12
-                vx = dx / norm
-                vy = dy / norm
-                vz = dz / norm
-                cx = tl.floor(o_x).to(tl.int32)
-                cy = tl.floor(o_y).to(tl.int32)
-                cz = tl.floor(o_z).to(tl.int32)
-                stepx = 1 if vx > 0 else (-1 if vx < 0 else 0)
-                stepy = 1 if vy > 0 else (-1 if vy < 0 else 0)
-                stepz = 1 if vz > 0 else (-1 if vz < 0 else 0)
-                if vx != 0.0:
-                    tx = tl.abs(((cx + 1 - o_x) if vx > 0 else (o_x - cx)) / vx)
-                    tdx = tl.abs(1.0 / vx)
+            i = tl.program_id(0)          # 一 program 一射线: 全量并行
+            dx = tl.load(dirs_ptr + i * 3 + 2)
+            dy = -tl.load(dirs_ptr + i * 3 + 0)
+            dz = -tl.load(dirs_ptr + i * 3 + 1)
+            dist = tl.load(dists_ptr + i) / voxel
+            norm = tl.sqrt(dx * dx + dy * dy + dz * dz) + 1e-12
+            vx = dx / norm
+            vy = dy / norm
+            vz = dz / norm
+            cx = tl.floor(o_x).to(tl.int32)
+            cy = tl.floor(o_y).to(tl.int32)
+            cz = tl.floor(o_z).to(tl.int32)
+            stepx = 1 if vx > 0 else (-1 if vx < 0 else 0)
+            stepy = 1 if vy > 0 else (-1 if vy < 0 else 0)
+            stepz = 1 if vz > 0 else (-1 if vz < 0 else 0)
+            if vx != 0.0:
+                tx = tl.abs(((cx + 1 - o_x) if vx > 0 else (o_x - cx)) / vx)
+                tdx = tl.abs(1.0 / vx)
+            else:
+                tx = float("inf")
+                tdx = float("inf")
+            if vy != 0.0:
+                ty = tl.abs(((cy + 1 - o_y) if vy > 0 else (o_y - cy)) / vy)
+                tdy = tl.abs(1.0 / vy)
+            else:
+                ty = float("inf")
+                tdy = float("inf")
+            if vz != 0.0:
+                tz = tl.abs(((cz + 1 - o_z) if vz > 0 else (o_z - cz)) / vz)
+                tdz = tl.abs(1.0 / vz)
+            else:
+                tz = float("inf")
+                tdz = float("inf")
+            t = 0.0
+            d12 = d1 * d2
+            while t <= dist:
+                inb = ((cx >= 0) & (cx < d0)) & ((cy >= 0) & (cy < d1)) & ((cz >= 0) & (cz < d2))
+                if inb:
+                    tl.store(free_ptr + cx * d12 + cy * d2 + cz, 1)
+                if tx <= ty and tx <= tz:
+                    t = tx
+                    cx += stepx
+                    tx += tdx
+                elif ty <= tz:
+                    t = ty
+                    cy += stepy
+                    ty += tdy
                 else:
-                    tx = float("inf")
-                    tdx = float("inf")
-                if vy != 0.0:
-                    ty = tl.abs(((cy + 1 - o_y) if vy > 0 else (o_y - cy)) / vy)
-                    tdy = tl.abs(1.0 / vy)
-                else:
-                    ty = float("inf")
-                    tdy = float("inf")
-                if vz != 0.0:
-                    tz = tl.abs(((cz + 1 - o_z) if vz > 0 else (o_z - cz)) / vz)
-                    tdz = tl.abs(1.0 / vz)
-                else:
-                    tz = float("inf")
-                    tdz = float("inf")
-                t = 0.0
-                d12 = d1 * d2
-                while t <= dist:
-                    inb = ((cx >= 0) & (cx < d0)) & ((cy >= 0) & (cy < d1)) & ((cz >= 0) & (cz < d2))
-                    if inb:
-                        tl.store(free_ptr + cx * d12 + cy * d2 + cz, 1)
-                    if tx <= ty and tx <= tz:
-                        t = tx
-                        cx += stepx
-                        tx += tdx
-                    elif ty <= tz:
-                        t = ty
-                        cy += stepy
-                        ty += tdy
-                    else:
-                        t = tz
-                        cz += stepz
-                        tz += tdz
+                    t = tz
+                    cz += stepz
+                    tz += tdz
         _TRITON_KERNEL = _dda
         return _dda
     except Exception:
