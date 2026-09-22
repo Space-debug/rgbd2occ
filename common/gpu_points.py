@@ -82,19 +82,23 @@ def speckle_gpu(P, vox=0.05, gmin=(-4.0, 0.3, -1.5), min_nbr=4):
 
 
 def downsample_gpu(P, C, vox):
-    """体素降采样: 质心 + 颜色均值 (GPU 求和顺序与 CPU 不同, 近似)。"""
+    """体素降采样: 质心 + 颜色均值 (GPU 求和顺序与 CPU 不同, 近似)。
+    实现: unique 压缩到实际格数(~4万)后一次 index_add —— 此前对全网格槽
+    (~8M) 做 6 次 float64 bincount 是点云线最大单点瓶颈(5.6ms/帧)。"""
     idx = torch.floor(P / vox).to(torch.int64)
     idx -= idx.min(0).values
     dims = (idx.max(0).values + 1).tolist()
     flat = (idx[:, 0] * dims[1] + idx[:, 1]) * dims[2] + idx[:, 2]
-    n = int(np.prod(dims))
-    cnt = torch.bincount(flat, minlength=n).to(torch.float64)
-    Ps = torch.stack([torch.bincount(flat, weights=P[:, j], minlength=n)
-                      for j in range(3)], 1) / cnt[:, None]
-    Cs = torch.stack([torch.bincount(flat, weights=C[:, j].double(), minlength=n)
-                      for j in range(C.shape[1])], 1) / cnt[:, None]
-    sel = cnt > 0
-    return Ps[sel], torch.round(Cs[sel]).to(torch.uint8)
+    uniq, inv = torch.unique(flat, return_inverse=True)
+    n = uniq.numel()
+    cnt = torch.bincount(inv, minlength=n).to(P.dtype)
+    Ps = torch.zeros((n, 3), dtype=P.dtype, device=P.device)
+    Ps.index_add_(0, inv, P)
+    Ps /= cnt[:, None]
+    Cs = torch.zeros((n, C.shape[1]), dtype=P.dtype, device=P.device)
+    Cs.index_add_(0, inv, C.to(P.dtype))
+    Cs = Cs / cnt[:, None]
+    return Ps, torch.round(Cs).to(torch.uint8)
 
 
 def depth_to_points_gpu(raw_u16, img, scale, fx, fy, cx, cy, dmin=0.3, dmax=8.0):
@@ -119,13 +123,15 @@ def _points_gpu_tensors(raw_u16, img, scale, fx, fy, cx, cy, dmin=0.3, dmax=8.0)
     raw = torch.tensor(raw_u16, device=dev)
     dep = raw.to(torch.float64) * scale
     valid = (dep > dmin) & (dep < dmax)
-    pad = torch.where(valid, dep, torch.full_like(dep, float("nan")))
+    dep32 = dep.to(torch.float32)                    # median 用 FP32: 输出与 FP64 差 0.000mm,
+    pad = torch.where(valid, dep32,                   # FP64 nanmedian 在消费级卡上是 64x 减速
+                      torch.full_like(dep32, float("nan")))
     pad = torch.nn.functional.pad(pad.unsqueeze(0).unsqueeze(0), (2, 2, 2, 2),
                                   mode="constant", value=float("nan")).reshape(H + 4, W + 4)
     win = pad.unfold(0, 5, 1).unfold(1, 5, 1)                # (H, W, 5, 5)
-    med = win.reshape(*win.shape[:2], -1).nanmedian(dim=-1).values
+    med = win.reshape(*win.shape[:2], -1).nanmedian(dim=-1).values.to(torch.float64)
     d1 = torch.where(valid, torch.where(torch.isfinite(med), med, dep),
-                     torch.zeros_like(dep))
+                     torch.zeros_like(dep))   # 后续梯度/反投影仍走 float64
     gy, gx = torch.gradient(torch.where(d1 > dmin, d1, torch.full_like(d1, float("nan"))))
     g = torch.sqrt(gy * gy + gx * gx)
     d1 = torch.where((d1 > dmin) & (torch.nan_to_num(g, nan=0.0) < 0.05), d1,
