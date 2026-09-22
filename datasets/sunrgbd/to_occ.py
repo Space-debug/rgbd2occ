@@ -37,7 +37,10 @@ import numpy as np
 
 from occ import convert_frame, load_depth, load_label, mask_depth, OccAnnotations, pose
 from common.get_logger import get_logger
+from common.run_qc import run_qc
+from common.write_manifest import write_manifest
 from config import dataset_paths
+from .labels import label_path, semantic_classes_doc
 
 log = get_logger("rgbd2occ.sunrgbd.occ")
 
@@ -48,8 +51,9 @@ VALID_RANGE = (0.3, 8.0)            # 与 branch1 清洗管线一致
 
 # ---------------- 批量模式 ----------------
 
-def build_tasks(splits, limit, v3_root=None, raw_root=None):
-    """从 v3 表构建有序任务列表 (场景内按 timestamp+token 排序, 即帧链顺序)。"""
+def build_tasks(splits, limit, v3_root=None, raw_root=None, labels=True):
+    """从 v3 表构建有序任务列表 (场景内按 timestamp+token 排序, 即帧链顺序)。
+    labels=True 时自动探测 train13labels/test13labels 逐帧标签路径。"""
     tasks = []
     for sp in splits:
         tb = os.path.join(v3_root or PATHS["nuscenes_out"], f"v1.0-sunrgbd-{sp}")
@@ -70,6 +74,7 @@ def build_tasks(splits, limit, v3_root=None, raw_root=None):
                             token=e["sample_token"], split=sp, ts=s.get("timestamp", 0),
                             depth=os.path.join(depth_dir, f"{num}.png"), K=K,
                             img=e["filename"],
+                            label=label_path(raw_root or PATHS["raw_root"], sp, num) if labels else None,
                             fx=K[0][0], fy=K[1][1], cx=K[0][2], cy=K[1][2]))
         rec.sort(key=lambda r: (r["scene"], r["ts"], r["token"]))
         if limit:
@@ -84,21 +89,27 @@ def build_tasks(splits, limit, v3_root=None, raw_root=None):
 
 
 def convert_one(out_root, task):
-    """转一帧; 异常捕获后返回 error 不中断整批。返回 (token, 状态, 错误堆栈)。"""
+    """转一帧; 异常捕获后返回 error 不中断整批。
+    返回 (token, 状态, 错误堆栈, 可见体素数)。"""
     tok = task["token"]
+    rel = os.path.join("gts", task["scene"], task["token"], "labels.npz")
     try:
-        out = os.path.join(out_root, "gts", task["scene"], task["token"], "labels.npz")
+        out = os.path.join(out_root, rel)
         if os.path.exists(out):
-            return tok, "skip", ""
+            with np.load(out) as d:
+                return tok, "skip", "", int((d["mask_camera"] > 0).sum())
         dep = mask_depth(load_depth(task["depth"], DEPTH_SCALE), VALID_RANGE)
-        res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"])
+        label = load_label(task["label"]) if task.get("label") else None
+        if label is not None and label.shape != dep.shape:
+            raise ValueError(f"标签形状 {label.shape} != 深度 {dep.shape}")
+        res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez_compressed(out, **res)
-        return tok, "ok", ""
+        return tok, "ok", "", int((res["mask_camera"] > 0).sum())
     except Exception:
         err = traceback.format_exc()
         get_logger("rgbd2occ.sunrgbd.occ").error("%s 转换失败: %s", tok, err.replace("\n", " | "))
-        return tok, "error", err
+        return tok, "error", err, 0
 
 
 def write_annotations(tasks, out_root):
@@ -128,18 +139,21 @@ def save_failed(out_root, fails):
 
 def run_batch(args):
     out_root = args.out_root or PATHS["occ_out"]
-    tasks = build_tasks(args.splits, args.limit, args.v3_root, args.raw_root)
-    log.info("任务 %d 帧, 场景 %s, workers=%d, out=%s", len(tasks),
+    use_labels = not args.no_labels
+    tasks = build_tasks(args.splits, args.limit, args.v3_root, args.raw_root, use_labels)
+    n_lab = sum(1 for t in tasks if t["label"])
+    log.info("任务 %d 帧 (带标签 %d), 场景 %s, workers=%d, out=%s", len(tasks), n_lab,
              sorted(set(t["scene"] for t in tasks)), args.workers, out_root)
     if args.ann_only:
         n = write_annotations(tasks, out_root)
         log.info("annotations 重建登记帧 %d", n)
         return 0
-    fails, t0, stat = {}, time.time(), {}
+    fails, counts, t0, stat = {}, {}, time.time(), {}
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        for k, (tok, st, err) in enumerate(
+        for k, (tok, st, err, cnt) in enumerate(
                 ex.map(partial(convert_one, out_root), tasks, chunksize=8), 1):
             stat[st] = stat.get(st, 0) + 1
+            counts[tok] = cnt
             if st == "error":
                 fails[tok] = err
             if k % 200 == 0 or k == len(tasks):
@@ -147,10 +161,32 @@ def run_batch(args):
                          k / (time.time() - t0))
     save_failed(out_root, fails)
     n_ann = write_annotations(tasks, out_root)
+
+    # ---- 数据集自描述侧车 + manifest (溯源) ----
+    with open(os.path.join(out_root, "semantic_classes.json"), "w", encoding="utf-8") as f:
+        json.dump(semantic_classes_doc(), f, indent=1, ensure_ascii=False)
+    entries = {t["token"]: {"file": 'gts/%s/%s/labels.npz' % (t["scene"], t["token"]),
+                            "count": counts.get(t["token"], 0)}
+               for t in tasks
+               if os.path.exists(os.path.join(out_root, "gts", t["scene"], t["token"], "labels.npz"))}
+    write_manifest(out_root, "occ",
+                   params=dict(splits=args.splits, limit=args.limit,
+                               frames=getattr(args, "frames", None),
+                               voxel=0.4, ranges=[[-40, 40], [-40, 40], [-1, 5.4]],
+                               ray_stride=4, depth_scale=DEPTH_SCALE,
+                               valid_range=list(VALID_RANGE), labels=use_labels,
+                               label_mapping="pixel==semantic id (SUNRGBD-13)" if use_labels else None),
+                   entries=entries)
+
+    rc = 1 if fails else 0
+    if not args.skip_qc:
+        q = run_qc(out_root, "occ")
+        log.info("质检: errors=%d warnings=%d (明细 -> qc_report.json)", q["errors"], q["warnings"])
+        rc = rc or (1 if q["errors"] else 0)
     log.info("完成: labels.npz 共 %d, annotations 登记帧 %d, 耗时 %.0fs%s",
              stat.get("ok", 0) + stat.get("skip", 0), n_ann, time.time() - t0,
-             " (有失败帧, 退出码 1)" if fails else "")
-    return 1 if fails else 0
+             " (有失败/质检错误, 退出码 1)" if rc else "")
+    return rc
 
 
 # ---------------- 单帧模式 ----------------
@@ -193,6 +229,9 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=0, help="每场景前 N 帧(试跑), 0=全量")
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--ann-only", action="store_true", help="只重建 annotations.json")
+    ap.add_argument("--no-labels", action="store_true",
+                    help="不接入 13 类语义标签 (占据记 others=0)")
+    ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
     # 单帧参数
     ap.add_argument("depth", nargs="?", help="[single] 深度图路径")
     ap.add_argument("--fx", type=float), ap.add_argument("--fy", type=float)

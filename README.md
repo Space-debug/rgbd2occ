@@ -67,6 +67,17 @@ python main.py sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
 - **测试**: `python tests/run_all.py`（零依赖运行器）或 `pytest tests/`。
   golden 测试签入 1 帧输入与期望产物（点云 bin 与 v2/v3 管线字节级一致、
   occ 输出逐元素一致），任何破坏等价性的实现改动都会被立即抓住。
+- **语义标签**: occ 批量转换自动接入 SUN RGB-D 13 类标签
+  （`train13labels`/`test13labels`，映射为 **semantic id == 像素值**：
+  0=others，1..13=bed…window，17=free），`--no-labels` 关闭；
+  包内 `semantic_classes.json` 侧车记录映射，数据集自描述。
+- **manifest 溯源**: 每次批量转换写 `<out>/manifest.json` ——
+  生成器版本/git 哈希/时间 + 参数快照 + 逐帧文件 md5/大小/点数(或可见体素数)。
+- **自动质检**: 转换后自动跑 QC 并写 `qc_report.json`（`--skip-qc` 关闭）：
+  文件缺失/大小不符/空帧/内参非法为**错误**（退出码 1）；计数偏低帧为警告；
+  另抽样深检 npz/bin 规格。 
+- **打包**: `pyproject.toml`；`pip install .` 后可用 `rgbd2occ sunrgbd occ ...`
+  命令（依赖 numpy/scipy/pillow）。
 
 ## 新数据集接入（只需三步）
 
@@ -100,7 +111,10 @@ nuScenes devkit 格式（to_nuscenes）:
 Occ3D 占据标注（to_occ, 与 Occupancy3D-nuScenes-v1.0-mini 同构）:
 ```
 <out>/annotations.json
-<out>/gts/<scene>/<token>/labels.npz   # semantics(0=others..16类,17=free) + mask_lidar + mask_camera
+<out>/semantic_classes.json    # 语义映射侧车 (1..13 = SUN RGB-D 13 类)
+<out>/manifest.json            # 生成器版本/参数/逐帧 md5 溯源
+<out>/qc_report.json           # 自动质检报告
+<out>/gts/<scene>/<token>/labels.npz   # semantics(0=others,1..13=语义,17=free) + mask_lidar + mask_camera
 ```
 关键约定: 轴序=自车系 X前/Y左/Z上; 未知=mask==0(语义名义 17); 位姿无真值置空 null;
 帧链 prev/next 首尾 "EOF"; 体素 0.4m, (200,200,16)。

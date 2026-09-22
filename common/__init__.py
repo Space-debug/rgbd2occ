@@ -16,8 +16,11 @@ from .deproject_filtered import deproject_filtered
 from .depth_to_points import depth_to_points
 from .voxel_downsample import voxel_downsample
 from .write_nuscenes_bin import write_nuscenes_bin
+from .write_manifest import write_manifest
+from .run_qc import run_qc
+from .get_logger import get_logger
 
 __all__ = ["load_depth", "load_label", "cam_to_ego_axes", "deproject",
            "median_gradient", "mask_depth", "sor_radius", "voxel_speckle",
            "deproject_filtered", "depth_to_points", "voxel_downsample",
-           "write_nuscenes_bin"]
+           "write_nuscenes_bin", "write_manifest", "run_qc", "get_logger"]

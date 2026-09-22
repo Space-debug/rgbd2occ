@@ -9,7 +9,7 @@ K = [[529.5, 0.0, 365.0], [0.0, 529.5, 265.0], [0.0, 0.0, 1.0]]
 def test_nuscenes_bad_frame_returns_error():
     r = dict(split="train", name="img-999999",
              img="no/such/img.jpg", dep="no/such/dep.png", K_native=K)
-    key, st, err = process_frame((r, "nowhere_out"))
+    key, st, err, _ = process_frame((r, "nowhere_out"))
     assert key == "train/img-999999"
     assert st == "error" and "Error" in err
 
@@ -17,6 +17,6 @@ def test_nuscenes_bad_frame_returns_error():
 def test_occ_bad_frame_returns_error():
     t = dict(scene="s", token="t", depth="no/such/dep.png",
              fx=529.5, fy=529.5, cx=365.0, cy=265.0)
-    tok, st, err = convert_one("nowhere_out", t)
+    tok, st, err, _ = convert_one("nowhere_out", t)
     assert tok == "t"
     assert st == "error" and "Error" in err

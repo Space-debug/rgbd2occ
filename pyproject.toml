@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgbd2occ"
+description = "RGBD datasets -> nuScenes devkit format + Occ3D occupancy annotations"
+requires-python = ">=3.8"
+dynamic = ["version"]
+dependencies = ["numpy", "scipy", "pillow"]
+
+[project.scripts]
+rgbd2occ = "main:main"
+
+[tool.setuptools]
+packages = ["common", "nuscenes", "occ", "datasets", "datasets.sunrgbd", "tests"]
+py-modules = ["main", "config", "version"]
+
+[tool.setuptools.dynamic]
+version = { attr = "version.VERSION" }

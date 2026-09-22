@@ -34,8 +34,11 @@ from PIL import Image
 
 from common import depth_to_points, load_depth, voxel_downsample, write_nuscenes_bin
 from common.get_logger import get_logger
+from common.run_qc import run_qc
+from common.write_manifest import write_manifest
 from nuscenes import token, write_tables
 from .meta import load_meta
+from .labels import CLASSES_13
 from config import dataset_paths
 
 log = get_logger("rgbd2occ.sunrgbd.nuscenes")
@@ -48,8 +51,6 @@ RES2SENSOR = {(730, 530): "kv2", (591, 441): "xtion",
               (561, 427): "kv1", (681, 531): "realsense"}
 # 相机系(x右,y下,z前) -> 自车系(x前,y左,z上) 的轴置换四元数 (w,x,y,z)
 CAM_AXIS_QUAT = [0.5, -0.5, 0.5, -0.5]
-CLASSES_13 = ["bed", "books", "ceiling", "chair", "floor", "furniture",
-              "objects", "picture", "sofa", "table", "tv", "wall", "window"]
 SPLITS = {
     "train": {"imgs": "SUNRGBD-train_images", "depth": "sunrgbd_train_depth", "n": 5285},
     "val":   {"imgs": "SUNRGBD-test_images",  "depth": "sunrgbd_test_depth",  "n": 5050},
@@ -104,17 +105,18 @@ def prepare_frames(splits, limit, frames, out, raw_root):
 
 def process_frame(job):
     """生成一帧的 pcd.bin 与 jpg (已存在则跳过); 异常捕获后返回 error 不中断整批。
-    返回 (key, 状态, 错误堆栈)。"""
+    返回 (key, 状态, 错误堆栈, 点数)。"""
     r, out = job
     key = "%s/%s" % (r["split"], r["name"])
+    rel = "samples/LIDAR_TOP/%s/%s.pcd.bin" % (r["split"], r["name"])
     try:
-        bin_dst = os.path.join(out, "samples", "LIDAR_TOP", r["split"], r["name"] + ".pcd.bin")
+        bin_dst = os.path.join(out, *rel.split("/"))
         img_dst = os.path.join(out, "samples", "CAM_FRONT", r["split"], r["name"] + ".jpg")
         if not os.path.exists(img_dst):
             os.makedirs(os.path.dirname(img_dst), exist_ok=True)
             shutil.copy2(r["img"], img_dst)
         if os.path.exists(bin_dst):
-            return key, "skip", ""
+            return key, "skip", "", os.path.getsize(bin_dst) // 20   # float32 x 5
         dep = load_depth(r["dep"], DEPTH_SCALE)
         img = np.array(Image.open(r["img"]).convert("RGB"))
         if dep.shape != img.shape[:2]:   # 深度网格为准, RGB 重采样对齐
@@ -125,11 +127,11 @@ def process_frame(job):
         if DOWNSAMPLE_VOX and len(P):
             P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64), DOWNSAMPLE_VOX)
         os.makedirs(os.path.dirname(bin_dst), exist_ok=True)
-        write_nuscenes_bin(bin_dst, P, C)
-        return key, "ok", ""
+        n = write_nuscenes_bin(bin_dst, P, C)
+        return key, "ok", "", n
     except Exception:
         get_logger("rgbd2occ.sunrgbd.nuscenes").error("%s 转换失败:\n%s", key, traceback.format_exc())
-        return key, "error", traceback.format_exc()
+        return key, "error", traceback.format_exc(), 0
 
 
 def build_tables(recs, split, out):
@@ -244,6 +246,7 @@ def main(argv=None):
     ap.add_argument("--frames", default="", help="指定帧号(逗号分隔, 各 split 都取), 如 1,1925")
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--tables-only", action="store_true", help="只重建表(用已有 meta 缓存)")
+    ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
     args = ap.parse_args(argv)
     out = args.out or PATHS["nuscenes_out"]
     frames = set(int(x) for x in args.frames.split(",") if x.strip()) if args.frames else None
@@ -251,13 +254,14 @@ def main(argv=None):
     recs = prepare_frames(args.splits, args.limit, frames, out, args.raw_root)
     log.info("帧记录 %d, splits=%s, out=%s", len(recs), args.splits, out)
 
-    fails = {}
+    fails, counts = {}, {}
     if not args.tables_only:
         t0, stat = time.time(), {}
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
-            for k, (key, st, err) in enumerate(
+            for k, (key, st, err, cnt) in enumerate(
                     ex.map(process_frame, [(r, out) for r in recs], chunksize=4), 1):
                 stat[st] = stat.get(st, 0) + 1
+                counts[key] = cnt
                 if st == "error":
                     fails[key] = err
                 if k % 200 == 0 or k == len(recs):
@@ -274,8 +278,27 @@ def main(argv=None):
                                                 "K_native": r["K_native"], "K_640": r["K_640"]}
             for r in recs}
     json.dump(intr, open(os.path.join(out, "intrinsics_per_frame.json"), "w"))
-    log.info("完成 -> %s%s", out, " (有失败帧, 退出码 1)" if fails else "")
-    sys.exit(1 if fails else 0)
+
+    # ---- manifest (溯源) ----
+    entries = {"%s/%s" % (r["split"], r["name"]):
+               {"file": "samples/LIDAR_TOP/%s/%s.pcd.bin" % (r["split"], r["name"]),
+                "count": counts.get("%s/%s" % (r["split"], r["name"]), 0)}
+               for r in recs
+               if os.path.exists(os.path.join(out, "samples", "LIDAR_TOP", r["split"],
+                                              r["name"] + ".pcd.bin"))}
+    write_manifest(out, "nuscenes",
+                   params=dict(splits=args.splits, limit=args.limit, frames=args.frames,
+                               downsample_vox=DOWNSAMPLE_VOX, depth_scale=DEPTH_SCALE,
+                               pipeline="median5x5+grad0.05 -> SOR(0.03,>=6) -> speckle(0.05,>=4)"),
+                   entries=entries)
+
+    rc = 1 if fails else 0
+    if not args.skip_qc:
+        q = run_qc(out, "nuscenes")
+        log.info("质检: errors=%d warnings=%d (明细 -> qc_report.json)", q["errors"], q["warnings"])
+        rc = rc or (1 if q["errors"] else 0)
+    log.info("完成 -> %s%s", out, " (有失败/质检错误, 退出码 1)" if rc else "")
+    sys.exit(rc)
 
 
 if __name__ == "__main__":
