@@ -154,7 +154,7 @@ def run_single(args):
           f"未知={int((mc == 0).sum())} -> {out}")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mode", choices=["batch", "single"], default="batch")
     ap.add_argument("--out-root", default=OUT_ROOT)
@@ -188,7 +188,7 @@ def main():
     ap.add_argument("--ray-stride", type=int, default=4)
     ap.add_argument("--k1", type=float, default=0.0)
     ap.add_argument("--k2", type=float, default=0.0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.mode == "single":
         need = ["depth", "fx", "fy", "cx", "cy", "scene", "token"]

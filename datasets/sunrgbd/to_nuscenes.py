@@ -31,7 +31,7 @@ from PIL import Image
 from common.io import load_depth
 from common.pointcloud import depth_to_points, voxel_downsample, write_nuscenes_bin
 from nuscenes import token, write_tables
-from sunrgbd_meta import load_meta
+from .meta import load_meta
 
 BASE = r"D:\Datasets\sunrgbd"
 OUT_DEFAULT = r"D:\Datasets\sunrgbd_nuscenes_v3"
@@ -211,7 +211,7 @@ def build_tables(recs, split, out):
     return scenes, samples, sds
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=OUT_DEFAULT)
     ap.add_argument("--splits", nargs="+", default=["train", "val"], choices=["train", "val"])
@@ -219,7 +219,7 @@ def main():
     ap.add_argument("--frames", default="", help="指定帧号(逗号分隔, 各 split 都取), 如 1,1925")
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--tables-only", action="store_true", help="只重建表(用已有 meta 缓存)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     frames = set(int(x) for x in args.frames.split(",") if x.strip()) if args.frames else None
 
     recs = prepare_frames(args.splits, args.limit, frames, args.out)
