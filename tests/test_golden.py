@@ -101,3 +101,27 @@ def test_median_cv2_path_bit_exact():
     a = median_gradient(dep, valid)
     b = median_gradient(dep, valid, raw=raw, scale=scale)
     assert np.array_equal(a, b), "cv2 整数域路径与 numpy 路径出现偏差!"
+
+
+def test_numba_kernels_bit_exact():
+    """numba 核与 numpy 稠密回退路径逐位一致 (SOR + 体素斑点)。"""
+    import importlib
+    import numpy as np
+    from PIL import Image
+    from common.depth_to_points import depth_to_points
+    sr = importlib.import_module("common.sor_radius")
+    vs = importlib.import_module("common.voxel_speckle")
+    if not sr._HAS_NUMBA:
+        return
+    raw = np.array(Image.open(os.path.join(DATA, "1925.png")))
+    dep = raw.astype(np.float64) / 6553.5
+    img = np.array(Image.open(os.path.join(DATA, "img-001925.jpg")).convert("RGB"))
+    if dep.shape != img.shape[:2]:
+        img = np.array(Image.open(os.path.join(DATA, "img-001925.jpg")).convert("RGB")
+                       .resize((dep.shape[1], dep.shape[0])))
+    kw = dict(raw=raw, scale=1.0 / 6553.5)
+    sr._HAS_NUMBA = vs._HAS_NUMBA = False
+    P0, C0 = depth_to_points(img, dep, 518.857901, 284.582449, 208.736166, **kw)
+    sr._HAS_NUMBA = vs._HAS_NUMBA = True
+    P1, C1 = depth_to_points(img, dep, 518.857901, 284.582449, 208.736166, **kw)
+    assert np.array_equal(P0, P1) and np.array_equal(C0, C1), "numba 核出现数值偏差!"
