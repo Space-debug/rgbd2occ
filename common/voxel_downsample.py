@@ -10,10 +10,10 @@ def voxel_downsample(P, C, vox):
     dims = idx.max(0) + 1
     flat = (idx[:, 0] * dims[1] + idx[:, 1]) * dims[2] + idx[:, 2]
     _, inv, cnt = np.unique(flat, return_inverse=True, return_counts=True)
-    Ps = np.zeros((len(cnt), 3))
-    np.add.at(Ps, inv, P)
+    n = len(cnt)
+    minl = n  # bincount(inv) 的箱数
+    Ps = np.stack([np.bincount(inv, weights=P[:, j], minlength=minl) for j in range(3)], 1)
     Ps /= cnt[:, None]
-    Cs = np.zeros((len(cnt), C.shape[1]), np.float64)
-    np.add.at(Cs, inv, C)
+    Cs = np.stack([np.bincount(inv, weights=C[:, j], minlength=minl) for j in range(C.shape[1])], 1)
     Cs = np.round(Cs / cnt[:, None]).astype(np.uint8)
     return Ps, Cs

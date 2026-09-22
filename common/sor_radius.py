@@ -12,7 +12,7 @@ def sor_radius(P, C, R=0.03, min_nbr=6):
     dims = ki.max(0) + 3
     flat = (ki[:, 0] * dims[1] + ki[:, 1]) * dims[2] + ki[:, 2]
     grid = np.zeros(int(np.prod(dims)), np.int32)
-    np.add.at(grid, flat, 1)
+    np.add.at(grid, flat, 1)   # 实测比 bincount(minlength=大网格) 快: 分配主导
     nbr = _nbr_count(grid.reshape(dims).astype(np.float32)).ravel()
     keep = nbr[flat] >= min_nbr
     return P[keep], C[keep]
