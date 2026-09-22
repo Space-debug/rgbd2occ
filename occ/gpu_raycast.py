@@ -116,7 +116,10 @@ def cast_rays_from_depth_gpu(raw, scale, fx, fy, cx, cy, gmin, voxel, dims,
 
     free = torch.zeros(int(np.prod(dims)), dtype=torch.int32, device=dev)
     n = int(dirs.numel() // 3)
-    _kernel()[(n,)](dirs, dists, free, float(gmin[0]), float(gmin[1]), float(gmin[2]),
+    o_gx = (0.0 - gmin[0]) / voxel
+    o_gy = (0.0 - gmin[1]) / voxel
+    o_gz = (0.0 - gmin[2]) / voxel
+    _kernel()[(n,)](dirs, dists / voxel, free, o_gx, o_gy, o_gz,
                     float(voxel), int(dims[0]), int(dims[1]), int(dims[2]))
     packed = _bitpack_download(free.bool())
     bits = np.unpackbits(packed)[:int(np.prod(dims))]
@@ -140,7 +143,7 @@ def voxelize_and_cast_gpu(raw, scale, fx, fy, cx, cy, lab, gmin, voxel, dims,
                         torch.tensor(v, dtype=torch.float32, device=dev))
     u, v = _uvs[(H, W)]
     valid = (dep > dmin) & (dep < dmax)
-    ii = torch.flatnonzero(valid.reshape(-1))            # 表面体素化: 全部有效像素
+    ii = torch.nonzero(valid.reshape(-1)).reshape(-1)    # 表面体素化: 全部有效像素
     z = dep.reshape(-1)[ii].to(torch.float64)
     uu, vv = (ii % W).to(torch.float64), (ii // W).to(torch.float64)
     xd = (uu - cx) / fx
@@ -166,11 +169,14 @@ def voxelize_and_cast_gpu(raw, scale, fx, fy, cx, cy, lab, gmin, voxel, dims,
 
     free = torch.zeros(int(np.prod(dims)), dtype=torch.int32, device=dev)
     n_rays = int(Xs.numel())
+    o_gx = (0.0 - gmin[0]) / voxel
+    o_gy = (0.0 - gmin[1]) / voxel
+    o_gz = (0.0 - gmin[2]) / voxel
     _kernel()[(n_rays,)](
         torch.stack([Xs / norm, Ys / norm, Zs / norm], 1).reshape(-1).to(torch.float32),
-        norm.to(torch.float32), free,
-        float(gmin[0]), float(gmin[1]), float(gmin[2]), float(voxel),
-        int(dims[0]), int(dims[1]), int(dims[2]))
+        (norm / voxel).to(torch.float32), free,
+        o_gx, o_gy, o_gz,
+        float(voxel), int(dims[0]), int(dims[1]), int(dims[2]))
 
     # 标签散射: 非零标签 amax (未标注 0 天然让位); 占据格去重
     lab_t = torch.tensor(lab, device=dev).reshape(-1)[ii]
@@ -181,7 +187,7 @@ def voxelize_and_cast_gpu(raw, scale, fx, fy, cx, cy, lab, gmin, voxel, dims,
     occ_u_all = torch.unique(occ_flat)
     torch.cuda.synchronize()
     # 下行只传占据格 (flat 索引 + 该格标签, ~50k 条)
-    return (free.bool().cpu().numpy(),
+    return (free.bool().cpu().numpy().reshape(dims),
             occ_u_all.cpu().numpy(),
             sem_cells[occ_u_all].cpu().numpy())
 
@@ -327,7 +333,7 @@ def voxelize_and_cast_batch_gpu(frames, gmin, voxel, dims, stride,
     o_gx = (0.0 - gmin[0]) / voxel
     o_gy = (0.0 - gmin[1]) / voxel
     o_gz = (0.0 - gmin[2]) / voxel
-    _kernel_batch()[(n_rays,)](dirs, dists, free, fids,
+    _kernel_batch()[(n_rays,)](dirs, dists / voxel, free, fids,
                                o_gx, o_gy, o_gz, float(voxel), d0, d1, d2, prod)
     torch.cuda.synchronize()
 

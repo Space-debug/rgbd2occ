@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 (2026-09-22)
+- GPU 批量流水线接入 to_occ (--gpu-batch B): 解码进程池 -> GPU 批量消费 -> 写盘线程池,
+  含 --with-images 硬链接/stride/label-vote 全参数支持, manifest 记录 backend/data_variant
+- 重大修复: gpu_raycast 单帧/批量核的原点参数错误 (gmin 被当作网格坐标传入,
+  射线从未进格 -> free 恒空被 try/except 静默吞掉回退 CPU); dists 单位错误
+  (米 vs 体素); 单帧返回未 reshape; 批量帧偏移双重相加; torch.flatnonzero 兼容
+- 三方验证 (单帧 GPU vs 批量 GPU vs CPU exact): 单/批完全一致, 与 CPU mask 差
+  0.05%/语义 0 差异 (float32 近似层文档化行为); 测试 28 项
+
 ## 0.9.1 (2026-09-22)
 - voxelize_and_cast_batch_gpu: 多帧批量 GPU (B 帧射线一次 launch, fid 索引网格切片,
   标签 13 次按类 index_put 确定性 amax); 实测 2 帧 11.6ms (5.8ms/帧), 与 CPU exact

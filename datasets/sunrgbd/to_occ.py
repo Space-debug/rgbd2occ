@@ -42,6 +42,7 @@ from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
 from common.write_manifest import write_manifest
 from common.backends import data_variant, get_backend
+from common import load_depth_raw
 from config import dataset_paths
 from .labels import label_path, semantic_classes_doc
 
@@ -225,6 +226,158 @@ def run_batch(args):
 
 
 
+
+
+def decode_one(task):
+    """解码进程: 读原始深度+标签(+硬链接图像), 连同元数据返回。"""
+    try:
+        import shutil as _sh
+        if task.get("img"):
+            src = os.path.join(PATHS["nuscenes_out"], *task["img"].split("/"))
+            dst = os.path.join(task.get("img_dst_root") or PATHS["occ_out"],
+                               *task["img"].split("/"))
+            if os.path.exists(src) and not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    _sh.copy2(src, dst)
+        raw = load_depth_raw(task["depth"])
+        lab = load_label(task["label"]) if task.get("label") else None
+        v = raw.astype(np.float64) * DEPTH_SCALE
+        v = v[v > 0.3]
+        med = float(np.median(v)) if v.size else 0.0
+        return dict(task=task, raw=raw, lab=lab, med=med, err="")
+    except Exception:
+        return dict(task=task, raw=None, lab=None, med=0.0,
+                    err=traceback.format_exc())
+
+
+def run_batch_gpu(args):
+    """GPU 批量流水线: 解码进程池 -> GPU 批量消费 (B 帧/launch) -> 写盘线程池。
+    每帧 GPU 结果与逐帧调用等价; float32 近似属 gpu 层文档化行为。"""
+    import torch
+    from concurrent.futures import ThreadPoolExecutor
+    from occ.voxel_grid import make_grid
+    from occ.gpu_raycast import voxelize_and_cast_batch_gpu
+
+    out_root = args.out_root or PATHS["occ_out"]
+    use_labels = not args.no_labels
+    tasks = build_tasks(args.splits, args.limit, args.v3_root, args.raw_root, use_labels)
+    if args.with_images:
+        for t in tasks:
+            t["img_dst_root"] = out_root
+    gmin, dims = make_grid(args.voxel, args.xrange, args.yrange, args.zrange)
+    attach_file(log, os.path.join(out_root, "logs",
+                                  time.strftime("run_gpu_%Y%m%d_%H%M%S.log")))
+    log.info("GPU 批量: %d 帧, B=%d, stride=%d, out=%s",
+             len(tasks), args.gpu_batch, args.ray_stride, out_root)
+    if args.ann_only:
+        n = write_annotations(tasks, out_root)
+        log.info("annotations 重建登记帧 %d", n)
+        return 0
+
+    os.makedirs(out_root, exist_ok=True)
+    write_pool = ThreadPoolExecutor(max_workers=8)
+    decode_pool = ProcessPoolExecutor(max_workers=args.workers)
+    futures = {}
+    fails, counts, meds, t0, stat = {}, {}, {}, time.time(), {}
+    write_errs = []
+
+    def save_one(tok, task, sem, mask):
+        rel = os.path.join("gts", task["scene"], task["token"], "labels.npz")
+        p = os.path.join(out_root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        np.savez_compressed(p, semantics=sem, mask_lidar=mask, mask_camera=mask)
+        return rel
+
+    def flush(batch):
+        """GPU 批量消费 + 派发写盘。batch: [(tok, decode结果dict), ...]"""
+        frames = []
+        for _, d in batch:
+            fr = dict(d["task"])
+            fr.update(raw=d["raw"], lab=d["lab"], scale=DEPTH_SCALE)
+            frames.append(fr)
+        results = voxelize_and_cast_batch_gpu(frames, gmin, args.voxel, dims,
+                                              args.ray_stride)
+        for (tok, d), (free, cells, cell_lab) in zip(batch, results):
+            task = d["task"]
+            sem = np.full(dims, 17, np.uint8)
+            sem.reshape(-1)[cells] = cell_lab
+            mask = np.zeros(dims, bool)
+            mask.reshape(-1)[cells] = True
+            mask |= free
+            mask = mask.astype(np.uint8)
+            counts[tok] = int(len(cells))
+            meds[tok] = d["med"]
+            stat["ok"] = stat.get("ok", 0) + 1
+            futures[tok] = write_pool.submit(save_one, tok, task, sem, mask)
+
+    decode_futs = [decode_pool.submit(decode_one, t) for t in tasks]
+    batch = []
+    for k, fut in enumerate(decode_futs, 1):
+        d = fut.result()
+        tok = d["task"]["token"]
+        if d["err"]:
+            stat["error"] = stat.get("error", 0) + 1
+        else:
+            stat["decoded"] = stat.get("decoded", 0) + 1
+        if d["err"]:
+            fails[tok] = d["err"]
+        else:
+            batch.append((tok, d))
+            if len(batch) >= args.gpu_batch:
+                flush(batch)
+                batch = []
+        if k % 200 == 0 or k == len(tasks):
+            el = time.time() - t0
+            log.info("  %d/%d 已解码, 已完成 %d, %.1f 帧/s", k, len(tasks),
+                     sum(1 for f in futures.values() if f.done()), k / el)
+    if batch:
+        flush(batch)
+    for tok, f in futures.items():
+        exc = f.exception()
+        if exc:
+            fails[tok] = traceback.format_exception(type(exc), exc, exc.__traceback__)[-1]
+    save_failed(out_root, fails)
+    write_pool.shutdown()
+    decode_pool.shutdown()
+    n_ann = write_annotations(tasks, out_root)
+
+    with open(os.path.join(out_root, "semantic_classes.json"), "w", encoding="utf-8") as f:
+        json.dump(semantic_classes_doc(), f, indent=1, ensure_ascii=False)
+    entries = {t["token"]: {"file": 'gts/%s/%s/labels.npz' % (t["scene"], t["token"]),
+                            "count": counts.get(t["token"], 0),
+                            "median_depth": meds.get(t["token"], 0.0)}
+               for t in tasks
+               if os.path.exists(os.path.join(out_root, "gts", t["scene"], t["token"], "labels.npz"))}
+    _bk, _bkinfo = get_backend()
+    write_manifest(out_root, "occ",
+                   params=dict(splits=args.splits, limit=args.limit,
+                               frames=getattr(args, "frames", None),
+                               voxel=args.voxel,
+                               ranges=[list(args.xrange), list(args.yrange), list(args.zrange)],
+                               ray_stride=args.ray_stride, depth_scale=DEPTH_SCALE,
+                               valid_range=list(VALID_RANGE), labels=use_labels,
+                               with_images=bool(args.with_images),
+                               label_vote=bool(args.label_vote),
+                               gpu_batch=args.gpu_batch,
+                               backend=_bk, backend_note=_bkinfo.get("note", ""),
+                               data_variant=data_variant(_bk),
+                               label_mapping="pixel==semantic id (SUNRGBD-13)" if use_labels else None),
+                   entries=entries)
+
+    rc = 1 if fails else 0
+    if not args.skip_qc:
+        q = run_qc(out_root, "occ")
+        log.info("质检: errors=%d warnings=%d (明细 -> qc_report_occ.json)", q["errors"], q["warnings"])
+        rc = rc or (1 if q["errors"] else 0)
+    log.info("完成: labels.npz 共 %d, annotations 登记帧 %d, 耗时 %.0fs%s",
+             len(entries), n_ann, time.time() - t0,
+             " (有失败/质检错误, 退出码 1)" if rc else "")
+    return rc
+
+
 def run_inspect(args):
     """渲染指定/警告帧的 BEV 质检图 -> <out-root>/inspect/<token>.png"""
     import re as _re
@@ -306,6 +459,9 @@ def main(argv=None):
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
     ap.add_argument("--label-vote", action="store_true",
                     help="体素内标签多数投票+未标注让位 (质量治理; 改变数据语义, 需重生成)")
+    ap.add_argument("--gpu-batch", type=int, default=0,
+                    help="GPU 批量流水线: 每批帧数 (需 RGBD2OCC_BACKEND=gpu + torch CUDA; "
+                         "0=传统多进程逐帧)")
     ap.add_argument("--inspect", default=None, help="渲染指定 token 的 BEV 质检图后退出")
     ap.add_argument("--inspect-warned", action="store_true",
                     help="渲染 qc_report 中所有警告帧的 BEV 质检图后退出")
@@ -340,6 +496,8 @@ def main(argv=None):
 
     if getattr(args, "inspect", None) or getattr(args, "inspect_warned", False):
         sys.exit(run_inspect(args))
+    if args.mode == "batch" and getattr(args, "gpu_batch", 0):
+        sys.exit(run_batch_gpu(args))
 
     if args.mode == "single":
         need = ["depth", "fx", "fy", "cx", "cy", "scene", "token"]
