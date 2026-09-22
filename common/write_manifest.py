@@ -25,12 +25,15 @@ def write_manifest(out_root, product, params, entries):
     import version
 
     full = {}
+    _cache = {}  # 多条目指向同一文件时只哈希一次
     for key, e in entries.items():
         p = os.path.join(out_root, e["file"])
-        row = dict(e)                      # 透传调用方附加字段 (如 median_depth)
-        row["file"] = e["file"].replace("\\", "/")
-        row["bytes"] = os.path.getsize(p) if os.path.exists(p) else 0
-        row["md5"] = _md5(p) if os.path.exists(p) else None
+        if p not in _cache:
+            _cache[p] = (os.path.getsize(p) if os.path.exists(p) else 0,
+                         _md5(p) if os.path.exists(p) else None)
+        row = dict(e)
+        row["file"] = e["file"].replace(chr(92), "/")
+        row["bytes"], row["md5"] = _cache[p]
         full[key] = row
     manifest = {
         "generator": {"name": "rgbd2occ", "version": version.VERSION,
