@@ -188,6 +188,22 @@ def load_boxes(meta_path, splits, out, limit=0, frames=None):
     return sel, stats
 
 
+
+
+def count_pts_in_boxes_gpu(pts, boxes_tr, boxes_Re, boxes_half):
+    """一帧所有框批量统计框内点数 (GPU): pts (N,3) numpy, boxes_* (B,3)/(B,3,3)/(B,3)。
+    与 CPU 逐框 (pts-tr)@Re 完全同式, 整数计数精确一致。"""
+    import torch
+    dev = "cuda"
+    p = torch.tensor(pts, dtype=torch.float64, device=dev)          # (N,3)
+    tr = torch.tensor(np.asarray(boxes_tr), dtype=torch.float64, device=dev)      # (B,3)
+    Re = torch.tensor(np.asarray(boxes_Re), dtype=torch.float64, device=dev)      # (B,3,3)
+    hf = torch.tensor(np.asarray(boxes_half), dtype=torch.float64, device=dev)   # (B,3)
+    loc = torch.einsum("bnj,bjk->bnk", p[None, :, :] - tr[:, None, :], Re)       # (B,N,3)
+    inside = (loc.abs() <= hf[:, None, :]).all(-1)                               # (B,N)
+    return inside.sum(1).cpu().numpy()
+
+
 def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=None, WH=None):
     """一帧的框 -> sample_annotation/instance 行 + 各框 2D 投影 IoU 列表。"""
     global _cur_Rtilt
@@ -200,6 +216,21 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=
     if count_points and os.path.exists(bin_p):
         pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)[:, :3].astype(np.float64)
     Rt = M.T @ np.asarray(rec["Rtilt"], np.float64).T
+    # 先算全部框变换, 框内点数批量统计 (gpu 层) 或逐框 (CPU)
+    _trs, _Res, _halves = [], [], []
+    for b in rec["boxes"]:
+        _trs.append(Rt @ np.asarray(b["centroid"], np.float64))
+        _Re = Rt @ np.asarray(b["basis"], np.float64)
+        _Res.append(_Re)
+        _halves.append(np.asarray(b["coeffs"], np.float64) / 2 + 0.05)
+    npts_list = [0] * len(rec["boxes"])
+    if pts is not None and rec["boxes"]:
+        if _gpu_ok():
+            npts_list = count_pts_in_boxes_gpu(pts, _trs, _Res, _halves).tolist()
+        else:
+            for j in range(len(rec["boxes"])):
+                loc = (pts - _trs[j]) @ _Res[j]
+                npts_list[j] = int(np.all(np.abs(loc) <= _halves[j], 1).sum())
     anns, insts, ious = [], [], []
     for j, b in enumerate(rec["boxes"]):
         name13 = CLASS_MAP.get(b["cls"].lower(), "objects")
@@ -210,10 +241,7 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=
         Re = Rt @ B
         quat = rot_to_quat(Re).tolist()
         size = [float(cf[1]), float(cf[0]), float(cf[2])]   # nuScenes wlh: 长(basis1)宽(basis0)高(basis2)
-        npts = 0
-        if pts is not None:
-            loc = (pts - tr) @ Re
-            npts = int(np.all(np.abs(loc) <= cf / 2 + 0.05, 1).sum())
+        npts = int(npts_list[j]) if pts is not None else 0
         if K is not None and WH is not None and b.get("bb2d"):
             ious.append(box_proj_iou(tr, Re, cf / 2, K, b["bb2d"], WH[0], WH[1]))
         a_tok = token("ann:%s:%d:%d" % (sp, num, j))
@@ -324,6 +352,8 @@ def main(argv=None):
                     help="只保留点云内点数 >= N 的框 (清洗模式, 0=全保留)")
     ap.add_argument("--label-qc-sample", type=int, default=50,
                     help="标签一致性抽检间隔帧 (0=关闭)")
+    ap.add_argument("--points-only", action="store_true",
+                    help="只重算已有表的 num_lidar_pts (并行编排第二遍; 跳过 IoU/label QC)")
     args = ap.parse_args(argv)
     out = args.out or PATHS["nuscenes_out"]
     raw_root = PATHS["raw_root"]
@@ -332,7 +362,8 @@ def main(argv=None):
     attach_file(log, os.path.join(out, "logs", time.strftime("det_%Y%m%d_%H%M%S.log")))
 
     frames, cache_stats = load_boxes(meta_path, args.splits, out, args.limit)
-    log.info("待填充帧 %d, out=%s, min_pts=%d", len(frames), out, args.min_pts)
+    log.info("待填充帧 %d, out=%s, min_pts=%d, points_only=%s",
+             len(frames), out, args.min_pts, args.points_only)
     t0 = time.time()
     all_entries, all_ious, dropped_by_pts = {}, [], 0
     for sp in args.splits:
@@ -353,6 +384,46 @@ def main(argv=None):
                              (e["width"], e["height"]))
         cats = {c["name"].split(".")[0]: c["token"]
                 for c in json.load(open(os.path.join(ver_dir, "category.json")))}
+
+        if args.points_only:
+            # 并行编排第二遍: 表已写好, 只补 num_lidar_pts。
+            # 变换直接用 meta 缓存的原始框重算 (与生成时同一代码路径, 无轴序风险),
+            # 按 sample_token 分组顺序 == 生成时的 boxes 顺序, zip 一一对应。
+            ann_path = os.path.join(ver_dir, "sample_annotation.json")
+            anns = json.load(open(ann_path, encoding="utf-8"))
+            by_frame = {}
+            for a in anns:
+                by_frame.setdefault(a["sample_token"], []).append(a)
+            t0p = time.time()
+            n_done = 0
+            for key in sorted(k for k in frames if k.startswith(sp + "/")):
+                num = int(key.split("/")[1])
+                bin_p = os.path.join(out, "samples", "LIDAR_TOP", sp,
+                                     "img-%06d.pcd.bin" % num)
+                fa = by_frame.get(fn2sample.get(key, ""), [])
+                if not fa or not os.path.exists(bin_p):
+                    continue
+                rec = frames[key]
+                if len(fa) != len(rec["boxes"]):
+                    continue
+                pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)[:, :3].astype(np.float64)
+                Rt = M.T @ np.asarray(rec["Rtilt"], np.float64).T
+                trs = [Rt @ np.asarray(b["centroid"], np.float64) for b in rec["boxes"]]
+                Res = [Rt @ np.asarray(b["basis"], np.float64) for b in rec["boxes"]]
+                halves = [np.asarray(b["coeffs"], np.float64) / 2 + 0.05
+                          for b in rec["boxes"]]
+                if _gpu_ok():
+                    cnts = count_pts_in_boxes_gpu(pts, trs, Res, halves).tolist()
+                else:
+                    cnts = [int(np.all(np.abs((pts - trs[j]) @ Res[j]) <= halves[j], 1).sum())
+                            for j in range(len(trs))]
+                for a, c in zip(fa, cnts):
+                    a["num_lidar_pts"] = int(c)
+                n_done += 1
+            json.dump(anns, open(ann_path, "w", encoding="utf-8"), indent=1)
+            log.info("%s points-only: %d 帧重算, %d 框, %.0fs",
+                     sp, n_done, len(anns), time.time() - t0p)
+            continue
 
         anns, insts, entries = [], [], {}
         n_bad = 0

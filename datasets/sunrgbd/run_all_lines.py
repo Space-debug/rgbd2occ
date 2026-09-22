@@ -94,23 +94,29 @@ def main(argv=None):
             log.error("%s 线异常: %s", name, traceback.format_exc()[-300:])
             results[name] = 1
 
+    det_pre = det + ["--skip-points"] + (["--label-qc-sample", str(args.label_qc_sample)]
+                                          if args.label_qc_sample != 50 else [])
+    det_post = det + ["--points-only"]
     th_nus = threading.Thread(target=_run, args=("nuscenes", lines[0][1], lines[0][2]))
     th_occ = threading.Thread(target=_run, args=("occ", lines[1][1], lines[1][2]))
-    th_nus.start(); th_occ.start(); th_nus.join(); th_occ.join()
-    rc = rc or (results.get("nuscenes", 1) or results.get("occ", 1))
-    log.info("===== 并行阶段完成 %.0fs (nuscenes=%s, occ=%s) =====",
-             time.time() - t1, results.get("nuscenes"), results.get("occ"))
+    th_det = threading.Thread(target=_run, args=("detection-pre", lines[2][1], det_pre))
+    th_nus.start(); th_occ.start(); th_det.start()
+    th_nus.join(); th_occ.join(); th_det.join()
+    rc = rc or (results.get("nuscenes", 1) or results.get("occ", 1) or results.get("detection-pre", 1))
+    log.info("===== 并行阶段完成 %.0fs (nuscenes=%s, occ=%s, det预填充=%s) =====",
+             time.time() - t1, results.get("nuscenes"), results.get("occ"),
+             results.get("detection-pre"))
 
-    # ---- 阶段2: 检测线 (依赖点云 bin, CPU 为主) ----
+    # ---- 阶段2: 检测线收尾 (依赖点云 bin, 只补 num_lidar_pts) ----
     t2 = time.time()
-    name, mod_name, line_argv = lines[2]
-    log.info("===== %s 线开始 =====", name)
+    log.info("===== detection points-only 开始 =====")
     try:
-        rc_line = importlib.import_module(mod_name).main(line_argv)
+        rc_line = importlib.import_module(lines[2][1]).main(det_post)
         rc = rc or (rc_line or 0)
     except SystemExit as e:
         rc = rc or (e.code or 0)
-    log.info("===== %s 线结束 %.0fs (累计退出码 %s) =====", name, time.time() - t2, rc)
+    log.info("===== detection points-only 结束 %.0fs (累计退出码 %s) =====",
+             time.time() - t2, rc)
     sys.exit(rc)
 
 
