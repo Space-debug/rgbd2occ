@@ -40,6 +40,7 @@ from common.get_logger import attach_file, get_logger
 from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
 from common.write_manifest import write_manifest
+from common.backends import data_variant, get_backend
 from config import dataset_paths
 from .labels import label_path, semantic_classes_doc
 
@@ -191,6 +192,7 @@ def run_batch(args):
                             "median_depth": meds.get(t["token"], 0.0)}
                for t in tasks
                if os.path.exists(os.path.join(out_root, "gts", t["scene"], t["token"], "labels.npz"))}
+    _bk, _bkinfo = get_backend()
     write_manifest(out_root, "occ",
                    params=dict(splits=args.splits, limit=args.limit,
                                frames=getattr(args, "frames", None),
@@ -198,6 +200,8 @@ def run_batch(args):
                                ray_stride=4, depth_scale=DEPTH_SCALE,
                                valid_range=list(VALID_RANGE), labels=use_labels,
                                with_images=bool(args.with_images),
+                               backend=_bk, backend_note=_bkinfo.get("note", ""),
+                               data_variant=data_variant(_bk),
                                label_mapping="pixel==semantic id (SUNRGBD-13)" if use_labels else None),
                    entries=entries)
 

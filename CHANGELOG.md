@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 (2026-09-22)
+- 计算后端分层: RGBD2OCC_BACKEND=exact|fast|gpu (默认 exact, 数据兼容基线)
+  - fast: CPU 近似 (median 全域 cv2 整数中值); 实测仅 ~7% 收益, 近似空间已被
+    精确核挤占
+  - gpu: torch CUDA raycast (逐位规则与 CPU 一致, float32 属近似层);
+    torch 不可用时自动降级 fast
+  - manifest 记录 backend/data_variant; 测试始终强制 exact (conftest)
+- 本机实测: RTX 5090 在位但 pytorch CUDA 轮子源不可达, GPU 层以优雅降级交付
+
 ## 0.7.0 (2026-09-22)
 - 输出合并为单一数据根 (官方 Occ3D 布局): gts/+annotations.json 并入 nuScenes 根,
   manifest/qc_report 按产品命名 (_nuscenes/_occ/_detection)

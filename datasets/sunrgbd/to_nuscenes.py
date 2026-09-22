@@ -40,6 +40,7 @@ from common.write_manifest import write_manifest
 from nuscenes import token, write_tables
 from .meta import load_meta
 from .labels import CLASSES_13
+from common.backends import data_variant, get_backend
 from config import dataset_paths
 
 log = get_logger("rgbd2occ.sunrgbd.nuscenes")
@@ -300,10 +301,13 @@ def main(argv=None):
                for r in recs
                if os.path.exists(os.path.join(out, "samples", "LIDAR_TOP", r["split"],
                                               r["name"] + ".pcd.bin"))}
+    _bk, _bkinfo = get_backend()
     write_manifest(out, "nuscenes",
                    params=dict(splits=args.splits, limit=args.limit, frames=args.frames,
                                downsample_vox=DOWNSAMPLE_VOX, depth_scale=DEPTH_SCALE,
-                               pipeline="median5x5+grad0.05 -> SOR(0.03,>=6) -> speckle(0.05,>=4)"),
+                               pipeline="median5x5+grad0.05 -> SOR(0.03,>=6) -> speckle(0.05,>=4)",
+                               backend=_bk, backend_note=_bkinfo.get("note", ""),
+                               data_variant=data_variant(_bk)),
                    entries=entries)
 
     rc = 1 if fails else 0

@@ -84,9 +84,56 @@ except ImportError:
     _HAS_NUMBA = False
 
 
+def _cast_torch(origin_g, dirs, max_dists, gmin, voxel, dims, stride):
+    """GPU torch 向量化 DDA (gpu 层; float32 -> 数值与 CPU 可能差 1ULP, 属近似层)。"""
+    import torch
+    dev = "cuda"
+    o = torch.tensor((np.asarray(origin_g, np.float64) - gmin) / voxel,
+                     dtype=torch.float32, device=dev)
+    d = np.empty_like(dirs)
+    d[:, 0], d[:, 1], d[:, 2] = dirs[:, 2], -dirs[:, 0], -dirs[:, 1]
+    d = torch.tensor(d[::stride], dtype=torch.float32, device=dev)
+    dist = torch.tensor((np.asarray(max_dists, np.float64) / voxel)[::stride],
+                        dtype=torch.float32, device=dev)
+    v = d / (d.norm(dim=1, keepdim=True) + 1e-12)
+    n = v.shape[0]
+    cur = torch.floor(o).to(torch.int64).repeat(n, 1)
+    step = torch.sign(v).to(torch.int64)
+    small = v.abs() <= 1e-12
+    tDelta = torch.where(small, torch.inf, 1.0 / v.abs())
+    frac = torch.where(v > 0, (cur + 1 - o) / v, (cur - o) / v)
+    tMax = torch.where(small, torch.inf, frac.abs())
+    t = torch.zeros(n, dtype=torch.float32, device=dev)
+    dims_t = torch.tensor(dims, device=dev)
+    free = torch.zeros(tuple(dims), dtype=torch.bool, device=dev)
+    max_iters = int(dist.max().item()) + 2 + int(o.abs().max().item()) + 2
+    for _ in range(max_iters):
+        act = t <= dist
+        if not act.any():
+            break
+        idx = cur[act]
+        inb = ((idx >= 0) & (idx < dims_t)).all(1)
+        fi = idx[inb]
+        free[fi[:, 0], fi[:, 1], fi[:, 2]] = True
+        ax = tMax.argmin(dim=1)
+        t = torch.where(act, tMax[torch.arange(n, device=dev), ax], t)
+        cur[torch.arange(n, device=dev), ax] += step[torch.arange(n, device=dev), ax]
+        tMax[torch.arange(n, device=dev), ax] += tDelta[torch.arange(n, device=dev), ax]
+        t[~torch.isfinite(t)] = torch.inf
+    return free.cpu().numpy().astype(bool)
+
+
 def cast_rays(origin_g, dirs, max_dists, gmin, voxel, dims, stride):
     """返回 bool 网格 free (dims 形状), True = 射线穿过的体素。
-    origin_g: 相机原点(相机系, 通常零向量); dirs/max_dists: 相机系方向与截断距离。"""
+    origin_g: 相机原点(相机系, 通常零向量); dirs/max_dists: 相机系方向与截断距离。
+    RGBD2OCC_BACKEND=gpu 且 torch CUDA 可用时走 GPU (近似层)。"""
+    if os.environ.get("RGBD2OCC_BACKEND", "exact") == "gpu":
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return _cast_torch(origin_g, dirs, max_dists, gmin, voxel, dims, stride)
+        except Exception:
+            pass  # GPU 失败自动回退 CPU 核
     if _HAS_NUMBA:
         dists = np.asarray(max_dists, np.float64)
         raw = _cast_kernel(np.asarray(origin_g, np.float64),

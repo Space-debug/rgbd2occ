@@ -9,6 +9,8 @@
 2. np.partition 快路径: 无 NaN 窗口取 25 值第 13 小 (同一顺序统计量)。
 3. 含 NaN 窗口 (边缘一圈 + 无效像素邻域, ~5-15%) 走 nanmedian。
 NaN 窗口检测用积分图 (布尔严格一致)。golden 双相机字节级锁定。"""
+import os
+
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
@@ -30,6 +32,15 @@ def median_gradient(depth, valid, dmin=0.3, grad_thr=0.05, raw=None, scale=None)
     medianBlur 快路径 (与 nanmedian 逐位一致)。
     返回滤波后的深度(无效/被剔除处置 0)。"""
     H, W = depth.shape
+    fast = os.environ.get("RGBD2OCC_BACKEND", "exact") == "fast"
+    if fast and raw is not None and scale is not None and _cv2_available():
+        import cv2
+        # 近似: 全域 cv2 整数中值 (无效像素参与计数), 略过 NaN 窗口分支
+        med = cv2.medianBlur(raw, 5).astype(np.float64) * scale
+        d1 = np.where(valid, np.where(np.isfinite(med), med, depth), 0)
+        gy, gx = np.gradient(np.where(d1 > dmin, d1, np.nan))
+        g = np.sqrt(gy * gy + gx * gx)
+        return np.where((d1 > dmin) & (np.nan_to_num(g) < grad_thr), d1, 0)
     # NaN 窗口检测走积分图: 窗内无效像素数>0 <=> 窗内含 NaN (含 pad 边缘, 布尔严格一致)
     inv = np.ones((H + 4, W + 4), np.int32)             # pad 边缘视为无效(NaN)
     inv[2:2 + H, 2:2 + W] = ~valid

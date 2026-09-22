@@ -3,6 +3,7 @@
 import os
 import sys
 
+os.environ.setdefault("RGBD2OCC_BACKEND", "exact")   # 测试始终以 exact 断言
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)

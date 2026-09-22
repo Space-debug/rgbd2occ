@@ -85,6 +85,9 @@ python main.py sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
   每次填充自动统计 3D->2D 投影 IoU（监控用，进 manifest）。
 - **日志落盘**: 批量运行同时写 `<out>/logs/*.log`。
 - 许可 MIT（LICENSE）；版本历史见 CHANGELOG.md。
+- **计算后端**: `RGBD2OCC_BACKEND=exact|fast|gpu`（默认 exact=逐位等价/数据兼容基线）。
+  fast=CPU 近似（~7% 收益）；gpu=torch CUDA raycast（无 torch 自动降级 fast）。
+  非 exact 会在 manifest 记录 `data_variant`；测试始终以 exact 断言。
 
 ## 新数据集接入（只需三步）
 
