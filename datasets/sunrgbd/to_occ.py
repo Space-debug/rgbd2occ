@@ -90,7 +90,7 @@ def build_tasks(splits, limit, v3_root=None, raw_root=None, labels=True):
     return tasks
 
 
-def convert_one(out_root, task, img_src_root=None):
+def convert_one(out_root, task, img_src_root=None, ray_stride=4):
     """转一帧; 异常捕获后返回 error 不中断整批。
     返回 (token, 状态, 错误堆栈, 可见体素数, 原始深度中位数米)。
     img_src_root 非空时把该帧 jpg 一并拷入 occ 包 (samples/CAM_FRONT/...)。"""
@@ -118,7 +118,8 @@ def convert_one(out_root, task, img_src_root=None):
         label = load_label(task["label"]) if task.get("label") else None
         if label is not None and label.shape != dep.shape:
             raise ValueError(f"标签形状 {label.shape} != 深度 {dep.shape}")
-        res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label)
+        res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label,
+                            ray_stride=ray_stride)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez_compressed(out, **res)
         return tok, "ok", "", int((res["mask_camera"] > 0).sum()), med
@@ -172,7 +173,8 @@ def run_batch(args):
     fails, counts, meds, t0, stat = {}, {}, {}, time.time(), {}
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         for k, (tok, st, err, cnt, med) in enumerate(
-                ex.map(partial(convert_one, out_root, img_src_root=img_src), tasks, chunksize=8), 1):
+                ex.map(partial(convert_one, out_root, img_src_root=img_src,
+                               ray_stride=args.ray_stride), tasks, chunksize=8), 1):
             stat[st] = stat.get(st, 0) + 1
             counts[tok] = cnt
             meds[tok] = med
@@ -197,7 +199,7 @@ def run_batch(args):
                    params=dict(splits=args.splits, limit=args.limit,
                                frames=getattr(args, "frames", None),
                                voxel=0.4, ranges=[[-40, 40], [-40, 40], [-1, 5.4]],
-                               ray_stride=4, depth_scale=DEPTH_SCALE,
+                               ray_stride=args.ray_stride, depth_scale=DEPTH_SCALE,
                                valid_range=list(VALID_RANGE), labels=use_labels,
                                with_images=bool(args.with_images),
                                backend=_bk, backend_note=_bkinfo.get("note", ""),
@@ -295,6 +297,7 @@ def main(argv=None):
                     help="不接入 13 类语义标签 (占据记 others=0)")
     ap.add_argument("--with-images", action="store_true",
                     help="把对应 jpg 从 nuScenes 包拷进 occ 包 (samples/CAM_FRONT/...)")
+
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
     ap.add_argument("--inspect", default=None, help="渲染指定 token 的 BEV 质检图后退出")
     ap.add_argument("--inspect-warned", action="store_true",
@@ -321,7 +324,9 @@ def main(argv=None):
                     help="[single] png 深度比例(米/单位)")
     ap.add_argument("--valid-range", type=float, nargs=2, default=None,
                     help="[single] 深度有效区间, 如 0.3 8; 默认不过滤")
-    ap.add_argument("--ray-stride", type=int, default=4)
+    ap.add_argument("--ray-stride", type=int, default=4,
+                    help="射线像素采样间隔(批量/单帧共用): 4=快(默认, 数据兼容), "
+                         "1=全像素(free 标注最密, 几乎零成本, 推荐追求质量时)")
     ap.add_argument("--k1", type=float, default=0.0)
     ap.add_argument("--k2", type=float, default=0.0)
     args = ap.parse_args(argv)

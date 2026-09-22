@@ -1,6 +1,10 @@
 # Changelog
 
 ## 0.8.0 (2026-09-22)
+- occ 批量暴露 --ray-stride (射线采样间隔, 批量/单帧共用): 1=全像素, free 标注
+  更密 (~+2% 体素, 集中在物体轮廓), 耗时几乎不变; 默认仍 4 (数据兼容)
+
+
 - 计算后端分层: RGBD2OCC_BACKEND=exact|fast|gpu (默认 exact, 数据兼容基线)
   - fast: CPU 近似 (median 全域 cv2 整数中值); 实测仅 ~7% 收益, 近似空间已被
     精确核挤占
