@@ -16,11 +16,10 @@ try:
 
     @njit(cache=True)
     def _sor_kernel(flat, d0, d1, d2, min_nbr):
-        # 散射计数与 27 邻域求和单遍完成 (此前散射走 np.add.at, 是阶段热点)
         grid = np.zeros(d0 * d1 * d2, np.int32)
-        n = flat.shape[0]
-        for i in range(n):
+        for i in range(flat.shape[0]):
             grid[flat[i]] += 1
+        n = flat.shape[0]
         keep = np.empty(n, np.bool_)
         d12 = d1 * d2
         for i in range(n):
