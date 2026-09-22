@@ -162,14 +162,17 @@ def decode_one_nus(task):
         return dict(task=task, raw=None, img=None, err=traceback.format_exc())
 
 
-def build_tables(recs, split, out):
-    """v3 表构建 (逐字段移植): 按相机型号分场景, 唯一 K_native 建标定条目。"""
+def build_tables(recs, split, out, require_bins=True):
+    """v3 表构建 (逐字段移植): 按相机型号分场景, 唯一 K_native 建标定条目。
+    require_bins=False 时忽略 bin 存在性 (表先行模式: 表内容由 recs 全量决定,
+    供 occ 线并行启动, 无需等点云转换完成)。"""
     by_sensor = {}
     for r in recs:
         if r["split"] != split:
             continue
-        if not os.path.exists(os.path.join(out, "samples", "LIDAR_TOP", split,
-                                           r["name"] + ".pcd.bin")):
+        if require_bins and not os.path.exists(
+                os.path.join(out, "samples", "LIDAR_TOP", split,
+                             r["name"] + ".pcd.bin")):
             continue
         by_sensor.setdefault(RES2SENSOR[(r["W"], r["H"])], []).append(r)
     for k in by_sensor:
@@ -357,6 +360,8 @@ def main(argv=None):
     ap.add_argument("--frames", default="", help="指定帧号(逗号分隔, 各 split 都取), 如 1,1925")
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--tables-only", action="store_true", help="只重建表(用已有 meta 缓存)")
+    ap.add_argument("--tables-first", action="store_true",
+                    help="表先行: 忽略 bin 存在性先建全量表 (供 occ 线并行启动), 然后正常转换")
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
     ap.add_argument("--gpu-batch", type=int, default=0,
                     help="GPU 批量流水线: 解码批大小 (需 RGBD2OCC_BACKEND=gpu; 0=多进程逐帧)")
@@ -411,6 +416,12 @@ def main(argv=None):
 
     recs = prepare_frames(args.splits, args.limit, frames, out, args.raw_root)
     log.info("帧记录 %d, splits=%s, out=%s", len(recs), args.splits, out)
+    if args.tables_first:
+        for split in args.splits:
+            scenes, samples, sds = build_tables(recs, split, out, require_bins=False)
+            log.info("%s 表先行: scene=%d sample=%d", split, len(scenes), len(samples))
+        log.info("表先行完成即退出 (转换由后续调用进行)")
+        return 0
 
     fails, counts = {}, {}
     if not args.tables_only:

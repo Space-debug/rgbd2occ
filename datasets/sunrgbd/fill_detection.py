@@ -173,6 +173,8 @@ def load_boxes(meta_path, splits, out, limit=0, frames=None):
 
     sel = {}
     for k, v in cache.items():
+        if "/" not in k:              # 跳过 _stats 等元数据键
+            continue
         sp, num = k.split("/")
         if frames and int(num) not in frames:
             continue

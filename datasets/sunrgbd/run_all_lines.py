@@ -67,14 +67,50 @@ def main(argv=None):
              ("detection", "datasets.sunrgbd.fill_detection", det)]
 
     rc = 0
-    for name, mod_name, line_argv in lines:
-        log.info("===== %s 线开始: %s =====", name, " ".join(line_argv))
+
+    # ---- 阶段0: 表先行 (秒级; occ 线依赖表而非 bin) ----
+    import time
+    t0 = time.time()
+    log.info("===== 表先行 (供 occ 并行启动) =====")
+    try:
+        importlib.import_module("datasets.sunrgbd.to_nuscenes").main(
+            nus + ["--tables-first"] + (["--skip-qc"] if args.skip_qc else []))
+    except SystemExit as e:
+        rc = rc or (e.code or 0)
+    log.info("===== 表先行完成 %.0fs =====", time.time() - t0)
+
+    # ---- 阶段1: 点云线(GPU) 与 occ 线(GPU) 并行 (依赖仅为表, 计算独立) ----
+    import threading
+    t1 = time.time()
+    results = {}
+
+    def _run(name, mod_name, line_argv):
         try:
-            rc_line = importlib.import_module(mod_name).main(line_argv)
-            rc = rc or (rc_line or 0)
+            results[name] = importlib.import_module(mod_name).main(line_argv) or 0
         except SystemExit as e:
-            rc = rc or (e.code or 0)
-        log.info("===== %s 线结束 (累计退出码 %s) =====", name, rc)
+            results[name] = e.code or 0
+        except Exception:
+            import traceback
+            log.error("%s 线异常: %s", name, traceback.format_exc()[-300:])
+            results[name] = 1
+
+    th_nus = threading.Thread(target=_run, args=("nuscenes", lines[0][1], lines[0][2]))
+    th_occ = threading.Thread(target=_run, args=("occ", lines[1][1], lines[1][2]))
+    th_nus.start(); th_occ.start(); th_nus.join(); th_occ.join()
+    rc = rc or (results.get("nuscenes", 1) or results.get("occ", 1))
+    log.info("===== 并行阶段完成 %.0fs (nuscenes=%s, occ=%s) =====",
+             time.time() - t1, results.get("nuscenes"), results.get("occ"))
+
+    # ---- 阶段2: 检测线 (依赖点云 bin, CPU 为主) ----
+    t2 = time.time()
+    name, mod_name, line_argv = lines[2]
+    log.info("===== %s 线开始 =====", name)
+    try:
+        rc_line = importlib.import_module(mod_name).main(line_argv)
+        rc = rc or (rc_line or 0)
+    except SystemExit as e:
+        rc = rc or (e.code or 0)
+    log.info("===== %s 线结束 %.0fs (累计退出码 %s) =====", name, time.time() - t2, rc)
     sys.exit(rc)
 
 
