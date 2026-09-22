@@ -201,7 +201,7 @@ def run_batch(args):
     rc = 1 if fails else 0
     if not args.skip_qc:
         q = run_qc(out_root, "occ")
-        log.info("质检: errors=%d warnings=%d (明细 -> qc_report.json)", q["errors"], q["warnings"])
+        log.info("质检: errors=%d warnings=%d (明细 -> qc_report_occ.json)", q["errors"], q["warnings"])
         rc = rc or (1 if q["errors"] else 0)
     log.info("完成: labels.npz 共 %d, annotations 登记帧 %d, 耗时 %.0fs%s",
              stat.get("ok", 0) + stat.get("skip", 0), n_ann, time.time() - t0,
@@ -217,7 +217,7 @@ def run_inspect(args):
     out_root = args.out_root or PATHS["occ_out"]
     targets = [args.inspect] if args.inspect else []
     if args.inspect_warned:
-        qp = os.path.join(out_root, "qc_report.json")
+        qp = os.path.join(out_root, "qc_report_occ.json")
         if not os.path.exists(qp):
             log.error("缺少 qc_report.json (先跑一次批量转换)")
             return 1

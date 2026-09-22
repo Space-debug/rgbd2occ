@@ -74,7 +74,7 @@ def _build_occ_pkg(td, n=3, break_file=None, bad_k=False):
 def test_manifest_and_qc_pass():
     with tempfile.TemporaryDirectory() as td:
         root = _build_occ_pkg(td)
-        man = json.load(open(os.path.join(root, "manifest.json")))
+        man = json.load(open(os.path.join(root, "manifest_occ.json")))
         assert man["generator"]["name"] == "rgbd2occ" and man["frames"] == 3
         e = man["entries"]["t0"]
         assert e["bytes"] > 0 and len(e["md5"]) == 32 and e["count"] == 100
@@ -87,9 +87,9 @@ def test_qc_catches_missing_file_and_bad_intrinsics():
         root = _build_occ_pkg(td, break_file="gts/s1/t1/labels.npz")
         q = run_qc(root, "occ", sample_every=1)
         assert q["errors"] >= 1 and any("文件缺失" in e for e in
-               json.load(open(os.path.join(root, "qc_report.json")))["errors"])
+               json.load(open(os.path.join(root, "qc_report_occ.json")))["errors"])
     with tempfile.TemporaryDirectory() as td:
         root = _build_occ_pkg(td, bad_k=True)
         q = run_qc(root, "occ", sample_every=1)
         assert q["errors"] >= 1 and any("内参非法" in e for e in
-               json.load(open(os.path.join(root, "qc_report.json")))["errors"])
+               json.load(open(os.path.join(root, "qc_report_occ.json")))["errors"])

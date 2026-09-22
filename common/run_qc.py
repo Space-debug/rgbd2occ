@@ -76,9 +76,9 @@ def run_qc(out_root, product, sample_every=25):
     """执行质检, 写 qc_report.json, 返回 {"errors": n, "warnings": n}。"""
     errors, warnings = [], []
     counts, n_entries = [], 0
-    mp = os.path.join(out_root, "manifest.json")
+    mp = os.path.join(out_root, "manifest_%s.json" % product)
     if not os.path.exists(mp):
-        errors.append("缺少 manifest.json (先完成转换)")
+        errors.append("缺少 manifest_%s.json (先完成转换)" % product)
     else:
         entries = json.load(open(mp, encoding="utf-8"))["entries"]
         n_entries = len(entries)
@@ -112,6 +112,6 @@ def run_qc(out_root, product, sample_every=25):
         "errors": errors,
         "warnings": warnings,
     }
-    with open(os.path.join(out_root, "qc_report.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_root, "qc_report_%s.json" % product), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1, ensure_ascii=False)
     return {"errors": len(errors), "warnings": len(warnings)}

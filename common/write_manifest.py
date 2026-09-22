@@ -19,7 +19,7 @@ def _md5(path, chunk=1 << 20):
 
 
 def write_manifest(out_root, product, params, entries):
-    """写 <out_root>/manifest.json。
+    """写 <out_root>/manifest_<product>.json (多产物共用根目录时互不覆盖)。
     entries: {key: {"file": 相对路径, "count": 点数或可见体素数}} -> 自动补 bytes/md5。
     params: 本次运行的参数快照 dict (CLI args + 关键常量)。"""
     import version
@@ -41,7 +41,7 @@ def write_manifest(out_root, product, params, entries):
         "frames": len(full),
         "entries": full,
     }
-    path = os.path.join(out_root, "manifest.json")
+    path = os.path.join(out_root, "manifest_%s.json" % product)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=1)
     return path

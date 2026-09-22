@@ -115,14 +115,19 @@ nuScenes devkit 格式（to_nuscenes）:
 ```
 点云为 float32 Nx5 (x,y,z,intensity=亮度/255,ring=0), 自车系 x前/y左/z上。
 
-Occ3D 占据标注（to_occ, 与 Occupancy3D-nuScenes-v1.0-mini 同构）:
+输出采用**合并根目录**（官方 Occ3D 布局: occ 产物与 nuScenes 数据同根）,
+本机即 `D:/Datasets/sunrgbd_nuscenes/v3`（config 的 occ_out == nuscenes_out）:
 ```
-<out>/annotations.json
-<out>/semantic_classes.json    # 语义映射侧车 (1..13 = SUN RGB-D 13 类)
-<out>/manifest.json            # 生成器版本/参数/逐帧 md5 溯源
-<out>/qc_report.json           # 自动质检报告
-<out>/gts/<scene>/<token>/labels.npz   # semantics(0=others,1..13=语义,17=free) + mask_lidar + mask_camera
+<root>/samples/{CAM_FRONT,LIDAR_TOP}/<split>/    # 图像 + 点云
+<root>/v1.0-sunrgbd-<split>/                     # 13 张 devkit 表 (含检测标注)
+<root>/gts/<scene>/<token>/labels.npz            # occ: semantics(0=others,1..13=语义,17=free)+双 mask
+<root>/annotations.json                          # occ 帧链/内外参 (img_path 直接指向 samples/)
+<root>/semantic_classes.json                     # occ 语义映射侧车
+<root>/manifest_{nuscenes,occ,detection}.json    # 各产物溯源 (版本/参数/逐帧 md5)
+<root>/qc_report_{nuscenes,occ}.json             # 各产物质检报告
 ```
+性能: median_gradient 对无 NaN 窗口走 np.partition 快路径 (与 nanmedian 逐位一致,
+golden 锁定), 点云线 ~10 帧/s(10核) -> 实测新帧率 ~40+/s(16核)。
 关键约定: 轴序=自车系 X前/Y左/Z上; 未知=mask==0(语义名义 17); 位姿无真值置空 null;
 帧链 prev/next 首尾 "EOF"; 体素 0.4m, (200,200,16)。
 
