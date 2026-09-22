@@ -91,7 +91,7 @@ def build_tasks(splits, limit, v3_root=None, raw_root=None, labels=True):
     return tasks
 
 
-def convert_one(out_root, task, img_src_root=None, ray_stride=4):
+def convert_one(out_root, task, img_src_root=None, ray_stride=4, label_vote=False):
     """转一帧; 异常捕获后返回 error 不中断整批。
     返回 (token, 状态, 错误堆栈, 可见体素数, 原始深度中位数米)。
     img_src_root 非空时把该帧 jpg 一并拷入 occ 包 (samples/CAM_FRONT/...)。"""
@@ -121,7 +121,8 @@ def convert_one(out_root, task, img_src_root=None, ray_stride=4):
         if label is not None and label.shape != dep.shape:
             raise ValueError(f"标签形状 {label.shape} != 深度 {dep.shape}")
         res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label,
-                            ray_stride=ray_stride, raw=raw, scale=DEPTH_SCALE)
+                            ray_stride=ray_stride, raw=raw, scale=DEPTH_SCALE,
+                            label_vote=label_vote)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez_compressed(out, **res)
         return tok, "ok", "", int((res["mask_camera"] > 0).sum()), med
@@ -176,7 +177,8 @@ def run_batch(args):
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         for k, (tok, st, err, cnt, med) in enumerate(
                 ex.map(partial(convert_one, out_root, img_src_root=img_src,
-                               ray_stride=args.ray_stride), tasks, chunksize=8), 1):
+                               ray_stride=args.ray_stride,
+                               label_vote=args.label_vote), tasks, chunksize=8), 1):
             stat[st] = stat.get(st, 0) + 1
             counts[tok] = cnt
             meds[tok] = med
@@ -204,6 +206,7 @@ def run_batch(args):
                                ray_stride=args.ray_stride, depth_scale=DEPTH_SCALE,
                                valid_range=list(VALID_RANGE), labels=use_labels,
                                with_images=bool(args.with_images),
+                               label_vote=bool(args.label_vote),
                                backend=_bk, backend_note=_bkinfo.get("note", ""),
                                data_variant=data_variant(_bk),
                                label_mapping="pixel==semantic id (SUNRGBD-13)" if use_labels else None),
@@ -301,6 +304,8 @@ def main(argv=None):
                     help="把对应 jpg 从 nuScenes 包拷进 occ 包 (samples/CAM_FRONT/...)")
 
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
+    ap.add_argument("--label-vote", action="store_true",
+                    help="体素内标签多数投票+未标注让位 (质量治理; 改变数据语义, 需重生成)")
     ap.add_argument("--inspect", default=None, help="渲染指定 token 的 BEV 质检图后退出")
     ap.add_argument("--inspect-warned", action="store_true",
                     help="渲染 qc_report 中所有警告帧的 BEV 质检图后退出")

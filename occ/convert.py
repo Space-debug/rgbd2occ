@@ -20,11 +20,32 @@ OTHERS = 0   # 官方: others/noise 类
 
 def convert_frame(depth, fx, fy, cx, cy, label=None, voxel=0.4,
                   x_range=(-40, 40), y_range=(-40, 40), z_range=(-1, 5.4),
-                  ray_stride=4, k1=0.0, k2=0.0, raw=None, scale=None):
+                  ray_stride=4, k1=0.0, k2=0.0, raw=None, scale=None,
+                  label_vote=False):
     """单帧转换。depth: (H,W) float 米制(无效值 0); label: (H,W) uint8 像素类别 0..16。
     返回 dict(semantics, mask_lidar, mask_camera), 均为官方 uint8 规格。
     mask_lidar = mask_camera (深度相机即唯一射线源, 官方 lidar mask 的合理近似)。"""
     gmin, dims = make_grid(voxel, x_range, y_range, z_range)
+
+    # ---- gpu 层全 GPU 路径: 体素化+射线追踪全部在卡上 (需 raw+label) ----
+    if (raw is not None and scale is not None and label is not None
+            and os.environ.get("RGBD2OCC_BACKEND") == "gpu"):
+        try:
+            from occ.gpu_raycast import voxelize_and_cast_gpu
+            free, occ_cells, cell_lab = voxelize_and_cast_gpu(
+                raw, scale, fx, fy, cx, cy, label, gmin, voxel, dims, ray_stride)
+            semantics = np.full(dims, FREE, np.uint8)
+            semantics[occ_cells] = cell_lab            # 未标签格=others(0), 其余 amax
+            occupied = np.zeros(dims, bool)
+            occupied.reshape(-1)[occ_cells] = True
+            free &= ~occupied
+            mask_camera = (free | occupied).astype(np.uint8)
+            return dict(semantics=semantics,
+                        mask_lidar=mask_camera,
+                        mask_camera=mask_camera)
+        except Exception:
+            pass  # GPU 失败回退 CPU 精确路径
+
     pts, u, v = deproject(depth, fx, fy, cx, cy, k1, k2)
     sem_px = label[v, u] if label is not None else np.full(len(pts), OTHERS, np.uint8)
     if sem_px.max(initial=0) > 16:
@@ -36,7 +57,21 @@ def convert_frame(depth, fx, fy, cx, cy, label=None, voxel=0.4,
     semantics = np.full(dims, FREE, np.uint8)
     idx, inside = to_grid(pts, gmin, voxel, dims)
     idx, sem_px = idx[inside], sem_px[inside]
-    semantics[idx[:, 0], idx[:, 1], idx[:, 2]] = sem_px
+    if label is not None and label_vote:
+        # 标签治理: 体素内多数投票 + 未标注(0)让位 (改变数据语义, 需重生成)
+        d12 = dims[1] * dims[2]
+        flat = idx[:, 0] * d12 + idx[:, 1] * dims[2] + idx[:, 2]
+        key = flat * 17 + sem_px                      # sem_px 0..16
+        uk, uc = np.unique(key, return_counts=True)
+        order = np.lexsort((uk % 17, -uc, uk // 17))  # 每格: 票多优先, 平票取小 id
+        first = np.ones(len(order), bool)
+        first[1:] = uk[order][1:] // 17 != uk[order][:-1] // 17
+        win_flat = uk[order][first] // 17
+        win_lab = (uk[order][first] % 17).astype(np.uint8)
+        semantics = np.full(dims, FREE, np.uint8)
+        semantics.reshape(-1)[win_flat] = win_lab
+    else:
+        semantics[idx[:, 0], idx[:, 1], idx[:, 2]] = sem_px   # 末次写入(官方行为)
     occupied = np.zeros(dims, bool)
     occupied[idx[:, 0], idx[:, 1], idx[:, 2]] = True
 

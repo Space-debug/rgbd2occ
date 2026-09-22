@@ -121,3 +121,66 @@ def cast_rays_from_depth_gpu(raw, scale, fx, fy, cx, cy, gmin, voxel, dims,
     packed = _bitpack_download(free.bool())
     bits = np.unpackbits(packed)[:int(np.prod(dims))]
     return bits.reshape(dims).astype(bool)
+
+
+def voxelize_and_cast_gpu(raw, scale, fx, fy, cx, cy, lab, gmin, voxel, dims,
+                          stride, dmin=0.3, dmax=8.0):
+    """全 GPU: 反投影 -> 表面体素化(占据格 + 标签 amax 散射) -> DDA 射线追踪。
+    返回 (free bool 网格, 占据格子 flat 索引 int64[cpu], 格子标签 uint8[cpu])。
+    传输: 上行 深度+标签 两张 uint8/16 图 (~1.5MB), 下行 仅占据格 (~50k*(8+1)B)。
+    近似说明 (gpu 层): 标签冲突取最大类 id (CPU exact 为末次写入); 其余一致。"""
+    import torch
+    H, W = raw.shape
+    dev = "cuda"
+    raw_t = torch.tensor(raw, device=dev)
+    dep = raw_t.to(torch.float32) * scale
+    if (H, W) not in _uvs:
+        u, v = np.meshgrid(np.arange(W), np.arange(H))
+        _uvs[(H, W)] = (torch.tensor(u, dtype=torch.float32, device=dev),
+                        torch.tensor(v, dtype=torch.float32, device=dev))
+    u, v = _uvs[(H, W)]
+    valid = (dep > dmin) & (dep < dmax)
+    ii = torch.flatnonzero(valid.reshape(-1))            # 表面体素化: 全部有效像素
+    z = dep.reshape(-1)[ii].to(torch.float64)
+    uu, vv = (ii % W).to(torch.float64), (ii // W).to(torch.float64)
+    xd = (uu - cx) / fx
+    yd = (vv - cy) / fy
+    X, Y, Z = z, -xd * z, -yd * z                        # 自车系
+    inb = ((X >= gmin[0]) & (X < gmin[0] + dims[0] * voxel) &
+           (Y >= gmin[1]) & (Y < gmin[1] + dims[1] * voxel) &
+           (Z >= gmin[2]) & (Z < gmin[2] + dims[2] * voxel))
+    X, Y, Z, ii = X[inb], Y[inb], Z[inb], ii[inb]
+    ix = torch.floor((X - gmin[0]) / voxel).to(torch.int64)
+    iy = torch.floor((Y - gmin[1]) / voxel).to(torch.int64)
+    iz = torch.floor((Z - gmin[2]) / voxel).to(torch.int64)
+    d12 = dims[1] * dims[2]
+    occ_flat = ix * d12 + iy * dims[2] + iz
+
+    # 射线 (stride 抽样, 与 CPU 采样序一致)
+    ii_s = ii[::stride]
+    z_s = z[::stride]
+    xd_s = ((ii_s % W).to(torch.float64) - cx) / fx
+    yd_s = ((ii_s // W).to(torch.float64) - cy) / fy
+    Xs, Ys, Zs = z_s, -xd_s * z_s, -yd_s * z_s
+    norm = torch.sqrt(Xs * Xs + Ys * Ys + Zs * Zs) + 1e-12
+
+    free = torch.zeros(int(np.prod(dims)), dtype=torch.int32, device=dev)
+    n_rays = int(Xs.numel())
+    _kernel()[(n_rays,)](
+        torch.stack([Xs / norm, Ys / norm, Zs / norm], 1).reshape(-1).to(torch.float32),
+        norm.to(torch.float32), free,
+        float(gmin[0]), float(gmin[1]), float(gmin[2]), float(voxel),
+        int(dims[0]), int(dims[1]), int(dims[2]))
+
+    # 标签散射: 非零标签 amax (未标注 0 天然让位); 占据格去重
+    lab_t = torch.tensor(lab, device=dev).reshape(-1)[ii]
+    sem_cells = torch.zeros(int(np.prod(dims)), dtype=torch.uint8, device=dev)
+    labeled = lab_t > 0
+    sem_cells.scatter_reduce_(0, occ_flat[labeled],
+                              lab_t[labeled].to(torch.uint8), reduce="amax")
+    occ_u_all = torch.unique(occ_flat)
+    torch.cuda.synchronize()
+    # 下行只传占据格 (flat 索引 + 该格标签, ~50k 条)
+    return (free.bool().cpu().numpy(),
+            occ_u_all.cpu().numpy(),
+            sem_cells[occ_u_all].cpu().numpy())
