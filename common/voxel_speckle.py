@@ -16,13 +16,19 @@ try:
     @njit(cache=True)
     def _speckle_kernel(idx, d0, d1, d2, min_nbr):
         occ = np.zeros(d0 * d1 * d2, np.uint8)
+        d12 = d1 * d2
         for i in range(idx.shape[0]):
-            occ[idx[i, 0] * d1 * d2 + idx[i, 1] * d2 + idx[i, 2]] = 1
+            # 负索引取模回绕: 与稠密路径 occ[负索引] 的 numpy 语义一致 (历史行为)
+            x = idx[i, 0] % d0
+            y = idx[i, 1] % d1
+            z = idx[i, 2] % d2
+            occ[x * d12 + y * d2 + z] = 1
         n = idx.shape[0]
         sel = np.empty(n, np.bool_)
-        d12 = d1 * d2
         for i in range(n):
-            x, y, z = idx[i, 0], idx[i, 1], idx[i, 2]
+            x = idx[i, 0] % d0
+            y = idx[i, 1] % d1
+            z = idx[i, 2] % d2
             s = 0
             for xx in range(x - 1, x + 2):
                 if xx < 0 or xx >= d0:
