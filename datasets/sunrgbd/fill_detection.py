@@ -18,12 +18,17 @@ QC: 尺寸/平移域检查 + 每框 3D->2D 投影与 gtBb2D 的 IoU 一致性统
 import argparse
 import json
 import os
+import re
 import sys
 import time
 
 import numpy as np
 
 from common.get_logger import attach_file, get_logger
+from common.load_depth import load_depth
+from common.load_label import load_label
+from common.median_gradient import median_gradient
+from common.deproject_filtered import deproject_filtered
 from common.write_manifest import write_manifest
 from nuscenes import token
 from .meta import load_meta
@@ -223,6 +228,64 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=
     return anns, insts, ious
 
 
+
+
+LABEL_DIRS = {"train": "train13labels", "val": "test13labels"}
+DEPTH_DIRS = {"train": "sunrgbd_train_depth", "val": "sunrgbd_test_depth"}
+
+
+def label_consistency_qc(out, frames, splits, raw_root, sample_every, depth_scale=1.0 / 6553.5):
+    """抽帧验证 3D 框与 13 类语义标签的一致率 (轴对齐近似, 保守值)。
+    返回 stats dict; 抽检走 load_depth/median_gradient/deproject_filtered 全链,
+    同时持续回归验证坐标链路。"""
+    per_split = {}
+    for sp in splits:
+        ver_dir = os.path.join(out, "v1.0-sunrgbd-%s" % sp)
+        sds = json.load(open(os.path.join(ver_dir, "sample_data.json"), encoding="utf-8"))
+        cs = {c["token"]: c["camera_intrinsic"]
+              for c in json.load(open(os.path.join(ver_dir, "calibrated_sensor.json"), encoding="utf-8"))}
+        for e in sds:
+            if "CAM_FRONT" in e.get("filename", ""):
+                num = int(re.search(r"img-(\d+)", e["filename"]).group(1))
+                per_split.setdefault(sp, {})[num] = cs[e["calibrated_sensor_token"]]
+    rates = []
+    for key in sorted(k for k in frames if int(k.split("/")[1]) % max(sample_every, 1) == 0):
+        sp, num = key.split("/")
+        num = int(num)
+        rec = frames[key]
+        if not rec["boxes"] or sp not in LABEL_DIRS:
+            continue
+        try:
+            dep = load_depth(os.path.join(raw_root, DEPTH_DIRS[sp], "%d.png" % num), depth_scale)
+            lab = load_label(os.path.join(raw_root, LABEL_DIRS[sp], "img13labels-%06d.png" % num))
+            K = per_split.get(sp, {}).get(num)
+            if K is None:
+                continue
+            d1 = median_gradient(dep, (dep > 0.3) & (dep < 8))
+            P, m = deproject_filtered(d1, K[0][0], K[0][2], K[1][2])
+            C = lab[m]
+        except Exception:
+            continue
+        Rt = M.T @ np.asarray(rec["Rtilt"], np.float64).T
+        for b in rec["boxes"]:
+            name13 = CLASS_MAP.get(b["cls"].lower(), "objects")
+            if name13 not in CLASSES_13:
+                continue
+            cc = CLASSES_13.index(name13) + 1
+            tr = Rt @ np.asarray(b["centroid"], np.float64)
+            Re = Rt @ np.asarray(b["basis"], np.float64)
+            hf = np.asarray(b["coeffs"], np.float64) / 2 + 0.1
+            inside = np.all(np.abs((P - tr) @ Re) <= hf, 1)
+            if inside.sum() < 5:
+                continue
+            rates.append(float(np.mean(C[inside] == cc)))
+    if not rates:
+        return {}
+    r = np.array(rates)
+    return {"frames_sampled": len(rates), "mean": round(float(r.mean()), 3),
+            "median": round(float(np.median(r)), 3), "gt05": round(float(np.mean(r > 0.5)), 3)}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=None, help="nuScenes 格式包根目录 (默认 config 的 nuscenes_out)")
@@ -231,6 +294,8 @@ def main(argv=None):
     ap.add_argument("--skip-points", action="store_true", help="跳过 num_lidar_pts 点云统计(更快)")
     ap.add_argument("--min-pts", type=int, default=0,
                     help="只保留点云内点数 >= N 的框 (清洗模式, 0=全保留)")
+    ap.add_argument("--label-qc-sample", type=int, default=50,
+                    help="标签一致性抽检间隔帧 (0=关闭)")
     args = ap.parse_args(argv)
     out = args.out or PATHS["nuscenes_out"]
     raw_root = PATHS["raw_root"]
@@ -307,12 +372,23 @@ def main(argv=None):
     for e in errs[:5]:
         log.warning("  %s", e)
 
+    # ---- 语义标签一致性 QC (抽帧) ----
+    label_qc = {}
+    if args.label_qc_sample:
+        label_qc = label_consistency_qc(out, frames, args.splits, raw_root,
+                                        args.label_qc_sample)
+        if label_qc:
+            log.info("标签一致性: 一致率均值 %.0f%% 中位 %.0f%% (>0.5 占比 %.0f%%, 抽检 %d 框)",
+                     label_qc["mean"] * 100, label_qc["median"] * 100,
+                     label_qc["gt05"] * 100, label_qc["frames_sampled"])
+
     write_manifest(out, "detection",
                    params=dict(splits=args.splits, limit=args.limit, min_pts=args.min_pts,
                                dropped_by_min_pts=dropped_by_pts,
                                frame="gravity(Rtilt)->ego", depth_scale=1.0 / 6553.5,
                                class_map="CLASS_MAP->SUNRGBD-13",
-                               meta_cache_stats=cache_stats, proj_iou=iou_stats),
+                               meta_cache_stats=cache_stats, proj_iou=iou_stats,
+                               label_qc=label_qc),
                    entries=all_entries)
     log.info("完成, 耗时 %.0fs", time.time() - t0)
     return 0
