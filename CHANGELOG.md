@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0 (2026-09-22)
+- GPU v2 传输优化: 上行原始 uint16 深度 (774KB, 反投影移至 GPU) 替代射线数组
+  (1.2-4.6MB); 下行 free 网格位压缩 (640KB->80KB, np.unpackbits 还原)
+- 实测 RTX 5090: occ 全帧 44-69ms (CPU 118-360ms, 2-3x); 语义 100% 一致,
+  mask 差异 0.03-0.2% (float32 边界射线, gpu 层为近似层的文档化行为)
+- GPU 管线使用: RGBD2OCC_BACKEND=gpu + Lss env (torch 2.7.1+cu128)
+
 ## 0.8.0 (2026-09-22)
 - 检测线新增语义标签一致性 QC (--label-qc-sample, 抽帧验证 3D 框 vs 13 类标签,
   轴对齐保守口径; 固化坐标链路回归监控, 结果进 manifest)

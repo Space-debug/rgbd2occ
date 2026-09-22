@@ -6,6 +6,8 @@
 - mask_camera/mask_lidar: uint8 0/1, 本帧被射线穿过或打到的体素
 - 未知 = mask==0 (语义值不作数), 训练/评测时被忽略
 """
+import os
+
 import numpy as np
 
 from common import deproject
@@ -18,7 +20,7 @@ OTHERS = 0   # 官方: others/noise 类
 
 def convert_frame(depth, fx, fy, cx, cy, label=None, voxel=0.4,
                   x_range=(-40, 40), y_range=(-40, 40), z_range=(-1, 5.4),
-                  ray_stride=4, k1=0.0, k2=0.0):
+                  ray_stride=4, k1=0.0, k2=0.0, raw=None, scale=None):
     """单帧转换。depth: (H,W) float 米制(无效值 0); label: (H,W) uint8 像素类别 0..16。
     返回 dict(semantics, mask_lidar, mask_camera), 均为官方 uint8 规格。
     mask_lidar = mask_camera (深度相机即唯一射线源, 官方 lidar mask 的合理近似)。"""
@@ -39,9 +41,21 @@ def convert_frame(depth, fx, fy, cx, cy, label=None, voxel=0.4,
     occupied[idx[:, 0], idx[:, 1], idx[:, 2]] = True
 
     # ---- ray casting 得 free 与可见掩膜 ----
-    dirs = pts / (np.linalg.norm(pts, axis=1, keepdims=True) + 1e-12)
-    dists = np.linalg.norm(pts, axis=1)
-    free = cast_rays(np.zeros(3), dirs, dists, gmin, voxel, dims, ray_stride)
+    # gpu 层 + 提供原始深度: 反投影/射线追踪全 GPU (上行 774KB 深度, 下行位压缩),
+    # float32 近似; exact/fast 层或 GPU 失败时走 CPU numba 核 (逐位等价基线)
+    free = None
+    if raw is not None and scale is not None             and os.environ.get("RGBD2OCC_BACKEND") == "gpu":
+        try:
+            from occ.gpu_raycast import cast_rays_from_depth_gpu
+            free = cast_rays_from_depth_gpu(raw, scale, fx, fy, cx, cy, gmin,
+                                            voxel, dims, ray_stride,
+                                            dmin=1e-4, dmax=1e9)
+        except Exception:
+            free = None
+    if free is None:
+        dirs = pts / (np.linalg.norm(pts, axis=1, keepdims=True) + 1e-12)
+        dists = np.linalg.norm(pts, axis=1)
+        free = cast_rays(np.zeros(3), dirs, dists, gmin, voxel, dims, ray_stride)
     free &= ~occupied
     semantics[free] = FREE   # 显式写一次: 射线确认的空(数值同默认填充, 语义来源不同)
     mask_camera = free | occupied

@@ -9,3 +9,8 @@ def load_depth(path, depth_scale=1.0):
     if path.endswith(".npy"):
         return np.load(path).astype(np.float64)
     return _load_image(path).astype(np.float64) * depth_scale
+
+
+def load_depth_raw(path):
+    """原始位深深度图 (uint16 ndarray, 未缩放) —— 供 GPU 管线小体积上传。"""
+    return _load_image(path)

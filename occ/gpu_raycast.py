@@ -1,0 +1,123 @@
+# -*- coding: utf-8 -*-
+"""GPU 占据射线追踪 v2 (gpu 层; float32 + GPU 反投影, 属近似层)。
+
+传输优化 (对比"CPU 反投影后上传射线"的 v1):
+- 上行: 原始 uint16 深度图 (~774KB) 代替射线数组 (1.2-4.6MB) —— 反投影在 GPU 做
+- 下行: free 网格按位压缩 (640KB -> 80KB), CPU 端 np.unpackbits 还原
+流程: 深度上传 -> GPU 反投影/归一化/stride 抽样 -> Triton DDA -> GPU 位压缩。
+"""
+import numpy as np
+
+_uvs = {}        # (H, W) -> (u, v) 网格缓存
+_KERNEL = None   # triton 核缓存
+
+
+def _kernel():
+    """惰性定义/编译 Triton DDA 核: 输入为已在 GPU 上的自车系方向 (N,3) 展平。"""
+    global _KERNEL
+    if _KERNEL is not None:
+        return _KERNEL
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _dda(dirs_ptr, dists_ptr, free_ptr, o_x, o_y, o_z,
+             voxel, d0, d1, d2):
+        i = tl.program_id(0)          # 一 program 一射线
+        dx = tl.load(dirs_ptr + i * 3 + 0)
+        dy = tl.load(dirs_ptr + i * 3 + 1)
+        dz = tl.load(dirs_ptr + i * 3 + 2)
+        dist = tl.load(dists_ptr + i)
+        cx = tl.floor(o_x).to(tl.int32)
+        cy = tl.floor(o_y).to(tl.int32)
+        cz = tl.floor(o_z).to(tl.int32)
+        stepx = 1 if dx > 0 else (-1 if dx < 0 else 0)
+        stepy = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        stepz = 1 if dz > 0 else (-1 if dz < 0 else 0)
+        if dx != 0.0:
+            tx = tl.abs(((cx + 1 - o_x) if dx > 0 else (o_x - cx)) / dx)
+            tdx = tl.abs(1.0 / dx)
+        else:
+            tx = float("inf")
+            tdx = float("inf")
+        if dy != 0.0:
+            ty = tl.abs(((cy + 1 - o_y) if dy > 0 else (o_y - cy)) / dy)
+            tdy = tl.abs(1.0 / dy)
+        else:
+            ty = float("inf")
+            tdy = float("inf")
+        if dz != 0.0:
+            tz = tl.abs(((cz + 1 - o_z) if dz > 0 else (o_z - cz)) / dz)
+            tdz = tl.abs(1.0 / dz)
+        else:
+            tz = float("inf")
+            tdz = float("inf")
+        t = 0.0
+        d12 = d1 * d2
+        while t <= dist:
+            inb = ((cx >= 0) & (cx < d0)) & ((cy >= 0) & (cy < d1)) & ((cz >= 0) & (cz < d2))
+            if inb:
+                tl.store(free_ptr + cx * d12 + cy * d2 + cz, 1)
+            if tx <= ty and tx <= tz:
+                t = tx
+                cx += stepx
+                tx += tdx
+            elif ty <= tz:
+                t = ty
+                cy += stepy
+                ty += tdy
+            else:
+                t = tz
+                cz += stepz
+                tz += tdz
+
+    _KERNEL = _dda
+    return _dda
+
+
+def _bitpack_download(free_gpu):
+    """GPU bool 网格 -> 位压缩 uint8 下载 (体积 /8)。"""
+    import torch
+    flat = free_gpu.reshape(-1)
+    pad = (-flat.numel()) % 8
+    if pad:
+        flat = torch.cat([flat, torch.zeros(pad, dtype=torch.bool, device=flat.device)])
+    bits = (flat.reshape(-1, 8).to(torch.uint8) * torch.tensor(
+        [128, 64, 32, 16, 8, 4, 2, 1], dtype=torch.uint8, device=flat.device)).sum(1)
+    return bits.cpu().numpy()
+
+
+def cast_rays_from_depth_gpu(raw, scale, fx, fy, cx, cy, gmin, voxel, dims,
+                             stride, dmin=0.3, dmax=8.0):
+    """原始 uint16 深度 -> free bool 网格 (全 GPU: 一次上传一次位压缩下载)。
+    采样语义与 CPU 一致: 有效像素按行主序排列后 ::stride。"""
+    import torch
+    H, W = raw.shape
+    dev = "cuda"
+    raw_t = torch.tensor(raw, device=dev)
+    dep = raw_t.to(torch.float32) * scale
+    if (H, W) not in _uvs:
+        u, v = np.meshgrid(np.arange(W), np.arange(H))
+        _uvs[(H, W)] = (torch.tensor(u, dtype=torch.float32, device=dev),
+                        torch.tensor(v, dtype=torch.float32, device=dev))
+    u, v = _uvs[(H, W)]
+    valid = (dep > dmin) & (dep < dmax)
+    ii = torch.flatnonzero(valid.reshape(-1))[::stride]
+    z = dep.reshape(-1)[ii].to(torch.float64)
+    uu, vv = (ii % W).to(torch.float64), (ii // W).to(torch.float64)
+    xd = (uu - cx) / fx
+    yd = (vv - cy) / fy
+    # 相机系 (xd*z, yd*z, z) -> 自车系方向 (X=z, Y=-xd*z, Z=-yd*z), 归一化
+    # float64 归一化后再转 float32 上 GPU: 步进决策与 CPU 高位一致
+    X, Y, Z = z, -xd * z, -yd * z
+    norm = torch.sqrt(X * X + Y * Y + Z * Z) + 1e-12
+    dirs = torch.stack([X / norm, Y / norm, Z / norm], 1).reshape(-1).to(torch.float32)
+    dists = norm.to(torch.float32)
+
+    free = torch.zeros(int(np.prod(dims)), dtype=torch.int32, device=dev)
+    n = int(dirs.numel() // 3)
+    _kernel()[(n,)](dirs, dists, free, float(gmin[0]), float(gmin[1]), float(gmin[2]),
+                    float(voxel), int(dims[0]), int(dims[1]), int(dims[2]))
+    packed = _bitpack_download(free.bool())
+    bits = np.unpackbits(packed)[:int(np.prod(dims))]
+    return bits.reshape(dims).astype(bool)

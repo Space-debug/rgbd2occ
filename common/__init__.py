@@ -4,7 +4,7 @@
 公共 API 全部在此聚合导出; 各功能文件可被单独修改而不影响其他代码。
 私有助手 (_imread/_nbr_count) 为相邻功能共用的底层实现。
 """
-from .load_depth import load_depth
+from .load_depth import load_depth, load_depth_raw
 from .load_label import load_label
 from .cam_to_ego_axes import cam_to_ego_axes
 from .deproject import deproject
@@ -21,7 +21,7 @@ from .run_qc import run_qc
 from .get_logger import get_logger
 from .render_bev import render_occ_bev, render_points_bev
 
-__all__ = ["load_depth", "load_label", "cam_to_ego_axes", "deproject",
+__all__ = ["load_depth", "load_depth_raw", "load_label", "cam_to_ego_axes", "deproject",
            "median_gradient", "mask_depth", "sor_radius", "voxel_speckle",
            "deproject_filtered", "depth_to_points", "voxel_downsample",
            "write_nuscenes_bin", "write_manifest", "run_qc", "get_logger", "render_occ_bev", "render_points_bev"]

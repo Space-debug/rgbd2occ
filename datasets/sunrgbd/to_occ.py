@@ -35,7 +35,8 @@ from functools import partial
 
 import numpy as np
 
-from occ import convert_frame, load_depth, load_label, mask_depth, OccAnnotations, pose
+from occ import convert_frame, load_label, mask_depth, OccAnnotations, pose
+from common import load_depth_raw
 from common.get_logger import attach_file, get_logger
 from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
@@ -98,7 +99,8 @@ def convert_one(out_root, task, img_src_root=None, ray_stride=4):
     tok = task["token"]
     rel = os.path.join("gts", task["scene"], task["token"], "labels.npz")
     try:
-        dep_raw = load_depth(task["depth"], DEPTH_SCALE)
+        raw = load_depth_raw(task["depth"])
+        dep_raw = raw.astype(np.float64) * DEPTH_SCALE
         v = dep_raw[dep_raw > 0.3]
         med = float(np.median(v)) if v.size else 0.0
         if img_src_root and task.get("img"):
@@ -119,7 +121,7 @@ def convert_one(out_root, task, img_src_root=None, ray_stride=4):
         if label is not None and label.shape != dep.shape:
             raise ValueError(f"标签形状 {label.shape} != 深度 {dep.shape}")
         res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label,
-                            ray_stride=ray_stride)
+                            ray_stride=ray_stride, raw=raw, scale=DEPTH_SCALE)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez_compressed(out, **res)
         return tok, "ok", "", int((res["mask_camera"] > 0).sum()), med
