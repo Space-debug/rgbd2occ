@@ -1,6 +1,13 @@
 # Changelog
 
 ## 0.9.1 (2026-09-22)
+- voxelize_and_cast_batch_gpu: 多帧批量 GPU (B 帧射线一次 launch, fid 索引网格切片,
+  标签 13 次按类 index_put 确定性 amax); 实测 2 帧 11.6ms (5.8ms/帧), 与 CPU exact
+  差异 0.004-0.05% (gpu 近似层)
+- 修复: 单帧/批量 GPU 函数的 z-ii 未同步过滤 (inb 过滤后 z 未跟随, 射线长度错位)
+- 语义标签治理: --label-vote (体素内多数投票 + 未标注让位, opt-in)
+
+## 0.9.1 (2026-09-22)
 - 语义标签治理: --label-vote (体素内多数投票 + 未标注让位, opt-in, 改变数据语义;
   实测每帧治理 17-61 个冲突体素, mask 不变)
 - GPU 层全链体素化: voxelize_and_cast_gpu (反投影/体素化/散射/射线全在卡上,
