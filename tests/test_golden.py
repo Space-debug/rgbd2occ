@@ -53,3 +53,35 @@ def test_occ_labels_golden_arrays():
     ref = np.load(os.path.join(GOLDEN, "occ_frame1.npz"))
     for k in ["semantics", "mask_lidar", "mask_camera"]:
         assert np.array_equal(res[k], ref[k]), f"{k} 与 golden 不再逐元素一致"
+
+
+def test_nuscenes_pointcloud_golden_kv1():
+    """kv1 传感器 (561x427) 的第二份 golden: 防住"只对一种相机正确"。"""
+    img = np.array(Image.open(os.path.join(DATA, "img-001925.jpg")).convert("RGB"))
+    dep = load_depth(os.path.join(DATA, "1925.png"), 1.0 / 6553.5)
+    if dep.shape != img.shape[:2]:
+        img = np.array(Image.open(os.path.join(DATA, "img-001925.jpg")).convert("RGB")
+                       .resize((dep.shape[1], dep.shape[0])))
+    K = [[518.857901, 0.0, 284.582449], [0.0, 519.469611, 208.736166], [0.0, 0.0, 1.0]]
+    P, C = depth_to_points(img, dep, K[0][0], K[0][2], K[1][2])
+    P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64), 0.03)
+    out = os.path.join(GOLDEN, "_tmp_kv1.bin")
+    try:
+        write_nuscenes_bin(out, P, C)
+        assert open(out, "rb").read() == open(
+            os.path.join(GOLDEN, "img-001925.pcd.bin"), "rb").read()
+    finally:
+        if os.path.exists(out):
+            os.remove(out)
+
+
+def test_occ_labels_golden_kv1():
+    """kv1 带标签 occ golden: 锁定语义标签管线 (掩膜+标签+转换全链)。"""
+    from occ import mask_depth
+    dep = mask_depth(load_depth(os.path.join(DATA, "1925.png"), 1.0 / 6553.5), (0.3, 8.0))
+    from common import load_label
+    lab = load_label(os.path.join(DATA, "img13labels-001925.png"))
+    res = convert_frame(dep, 518.857901, 519.469611, 284.582449, 208.736166, label=lab)
+    ref = np.load(os.path.join(GOLDEN, "occ_kv1_labeled.npz"))
+    for k in ["semantics", "mask_lidar", "mask_camera"]:
+        assert np.array_equal(res[k], ref[k]), f"{k} 与 kv1 带标签 golden 不一致"

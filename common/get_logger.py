@@ -8,6 +8,17 @@ import os
 _FMT = "%(asctime)s %(levelname)s [%(processName)s] %(name)s: %(message)s"
 
 
+
+def attach_file(logger, path):
+    """给 logger 增加文件 handler (主进程调用一次, 跑批日志留档可回溯)。"""
+    import logging as _l, os as _os
+    _os.makedirs(_os.path.dirname(_os.path.abspath(path)), exist_ok=True)
+    fh = _l.FileHandler(path, encoding="utf-8")
+    fh.setFormatter(_l.Formatter(_FMT, datefmt="%H:%M:%S"))
+    logger.addHandler(fh)
+    return path
+
+
 def _level():
     lv = os.environ.get("RGBD2OCC_LOGLEVEL")
     if not lv:

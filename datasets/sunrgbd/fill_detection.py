@@ -10,7 +10,10 @@
 产物: 在已有 nuScenes 格式包上原地填充
   <out>/v1.0-sunrgbd-<split>/sample_annotation.json + instance.json
   (attribute 留空; num_lidar_pts 由点云 bin 实际统计)
-用法: python main.py sunrgbd detection [--limit N] [--skip-points]
+QC: 尺寸/平移域检查 + 每框 3D->2D 投影与 gtBb2D 的 IoU 一致性统计 (进日志与 manifest)。
+用法:
+  python main.py sunrgbd detection [--limit N] [--skip-points] [--min-pts N]
+  --min-pts N: 只保留点云内点数 >= N 的框 (清洗模式), 统计量进 manifest
 """
 import argparse
 import json
@@ -20,7 +23,7 @@ import time
 
 import numpy as np
 
-from common.get_logger import get_logger
+from common.get_logger import attach_file, get_logger
 from common.write_manifest import write_manifest
 from nuscenes import token
 from .meta import load_meta
@@ -82,15 +85,40 @@ def rot_to_quat(R):
                      (R[1, 2] + R[2, 1]) / s, 0.25 * s])
 
 
+def box_proj_iou(tr, Re, hf, K, bb2d, W, H):
+    """3D 框角点投影到像素 vs gtBb2D [x y w h] 的 IoU。
+    tr/Re 为自车系; 自车系 -> 工具箱相机系 (x右,y前,z上) 只需轴变换 M。"""
+    cs = np.array([tr + Re @ np.array([dx, dy, dz]) * hf
+                   for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)])
+    pc = cs @ M.T
+    fwd = pc[:, 1]
+    if (fwd <= 0.05).any():
+        return None
+    u = K[0, 0] * pc[:, 0] / fwd + K[0, 2]
+    v = -K[1, 1] * pc[:, 2] / fwd + K[1, 2]
+    x1, y1 = max(u.min(), 0), max(v.min(), 0)
+    x2, y2 = min(u.max(), W), min(v.max(), H)
+    gx, gy, gw, gh = bb2d
+    ix1, iy1 = max(x1, gx), max(y1, gy)
+    ix2, iy2 = min(x2, gx + gw), min(y2, gy + gh)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    union = (x2 - x1) * (y2 - y1) + gw * gh - inter
+    return inter / union if union > 0 else None
+
+
 def load_boxes(meta_path, splits, out, limit=0, frames=None):
-    """SUNRGBDMeta -> {split/num: {"Rtilt": 3x3, "boxes": [...]}} (带缓存)。"""
+    """SUNRGBDMeta -> {split/num: {"Rtilt", "boxes"[, "bb2d"]}} (带缓存, 含 _stats 统计)。"""
     cache_path = os.path.join(out, "detection_meta_cache.json")
+    stats = None
     if os.path.exists(cache_path):
         cache = json.load(open(cache_path, encoding="utf-8"))
+        stats = cache.pop("_stats", None)
     else:
         log.info("解析 %s ...", meta_path)
         meta = load_meta(meta_path)
         cache = {}
+        stats = {"frames": 0, "frames_dropped": 0, "boxes_kept": 0,
+                 "boxes_dropped": 0, "boxes_no2d": 0}
         n_meta = len(meta["K"])
         for fi in range(n_meta):
             # 缓存永远全量提取 (train: fi>5049 -> 帧 fi-5049; val: fi<5050 -> 帧 fi+1)
@@ -101,9 +129,11 @@ def load_boxes(meta_path, splits, out, limit=0, frames=None):
                 bb = meta["groundtruth3DBB"][fi]
                 R = np.array(meta["Rtilt"][fi], np.float64)
                 if R.shape != (3, 3):
+                    stats["frames_dropped"] += 1
                     continue
                 boxes = []
                 bcls = _aslist(bb["classname"])
+                b2dl = _aslist(bb["gtBb2D"])
                 for j in range(len(bcls)):
                     try:
                         ctr = np.array(bb["centroid"][j], np.float64).ravel()
@@ -112,15 +142,29 @@ def load_boxes(meta_path, splits, out, limit=0, frames=None):
                     except Exception:
                         continue
                     if ctr.shape != (3,) or cf.shape != (3,) or B.shape != (3, 3):
+                        stats["boxes_dropped"] += 1
                         continue
+                    bb2d = None
+                    if j < len(b2dl):
+                        g = np.array(b2dl[j]).ravel()
+                        if g.shape == (4,) and g[2] > 0 and g[3] > 0:
+                            bb2d = [float(v) for v in g]
+                    if bb2d is None:
+                        stats["boxes_no2d"] += 1
                     boxes.append(dict(cls=str(bcls[j]), centroid=ctr.tolist(),
-                                      coeffs=cf.tolist(), basis=B.tolist()))
+                                      coeffs=cf.tolist(), basis=B.tolist(), bb2d=bb2d))
+                stats["frames"] += 1
+                stats["boxes_kept"] += len(boxes)
                 cache["%s/%06d" % (sp, num)] = {"Rtilt": R.tolist(), "boxes": boxes}
             except Exception:
+                stats["frames_dropped"] += 1
                 continue
+        cache["_stats"] = stats
         os.makedirs(out, exist_ok=True)
         json.dump(cache, open(cache_path, "w", encoding="utf-8"))
-        log.info("detection meta 缓存 -> %s", cache_path)
+        log.info("detection meta 缓存 -> %s (帧 %d 丢帧 %d, 框保留 %d 丢弃 %d 无2D %d)",
+                 cache_path, stats["frames"], stats["frames_dropped"],
+                 stats["boxes_kept"], stats["boxes_dropped"], stats["boxes_no2d"])
 
     sel = {}
     for k, v in cache.items():
@@ -134,21 +178,22 @@ def load_boxes(meta_path, splits, out, limit=0, frames=None):
             ks = sorted(k for k in sel if k.startswith(sp + "/"))
             take.update({k: sel[k] for k in ks[:limit]})
         sel = take
-    return sel
+    return sel, stats
 
 
-def process(split, frame_key, rec, samples_idx, cats, out, count_points=True):
-    """一帧的框 -> sample_annotation/instance 行。"""
+def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=None, WH=None):
+    """一帧的框 -> sample_annotation/instance 行 + 各框 2D 投影 IoU 列表。"""
+    global _cur_Rtilt
     sp, num = split, int(frame_key.split("/")[1])
     sample_tok = samples_idx.get(frame_key)
     if sample_tok is None:
-        return [], []
+        return [], [], []
     bin_p = os.path.join(out, "samples", "LIDAR_TOP", sp, "img-%06d.pcd.bin" % num)
     pts = None
     if count_points and os.path.exists(bin_p):
         pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)[:, :3].astype(np.float64)
-    Rt = M.T @ np.asarray(rec["Rtilt"]).T
-    anns, insts = [], []
+    Rt = M.T @ np.asarray(rec["Rtilt"], np.float64).T
+    anns, insts, ious = [], [], []
     for j, b in enumerate(rec["boxes"]):
         name13 = CLASS_MAP.get(b["cls"].lower(), "objects")
         ctr = np.asarray(b["centroid"], np.float64)
@@ -162,6 +207,8 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True):
         if pts is not None:
             loc = (pts - tr) @ Re
             npts = int(np.all(np.abs(loc) <= cf / 2 + 0.05, 1).sum())
+        if K is not None and WH is not None and b.get("bb2d"):
+            ious.append(box_proj_iou(tr, Re, cf / 2, K, b["bb2d"], WH[0], WH[1]))
         a_tok = token("ann:%s:%d:%d" % (sp, num, j))
         i_tok = token("inst:%s:%d:%d" % (sp, num, j))
         anns.append({"token": a_tok, "sample_token": sample_tok,
@@ -173,7 +220,7 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True):
         insts.append({"token": i_tok, "category_token": cats[name13],
                       "nbr_annotations": 1, "first_annotation_token": a_tok,
                       "last_annotation_token": a_tok})
-    return anns, insts
+    return anns, insts, ious
 
 
 def main(argv=None):
@@ -182,27 +229,35 @@ def main(argv=None):
     ap.add_argument("--splits", nargs="+", default=["train", "val"], choices=["train", "val"])
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--skip-points", action="store_true", help="跳过 num_lidar_pts 点云统计(更快)")
+    ap.add_argument("--min-pts", type=int, default=0,
+                    help="只保留点云内点数 >= N 的框 (清洗模式, 0=全保留)")
     args = ap.parse_args(argv)
     out = args.out or PATHS["nuscenes_out"]
     raw_root = PATHS["raw_root"]
     meta_path = os.path.join(raw_root, "SUNRGBDtoolbox", "Metadata", "SUNRGBDMeta.mat")
+    os.makedirs(out, exist_ok=True)
+    attach_file(log, os.path.join(out, "logs", time.strftime("det_%Y%m%d_%H%M%S.log")))
 
-    frames = load_boxes(meta_path, args.splits, out, args.limit)
-    log.info("待填充帧 %d, out=%s", len(frames), out)
+    frames, cache_stats = load_boxes(meta_path, args.splits, out, args.limit)
+    log.info("待填充帧 %d, out=%s, min_pts=%d", len(frames), out, args.min_pts)
     t0 = time.time()
-    all_entries = {}
+    all_entries, all_ious, dropped_by_pts = {}, [], 0
     for sp in args.splits:
         ver_dir = os.path.join(out, "v1.0-sunrgbd-%s" % sp)
         if not os.path.exists(os.path.join(ver_dir, "sample.json")):
             log.error("缺少 %s 的表 (先跑 nuscenes 产品线)", sp)
             return 1
-        # sample.json 无帧号 -> 从 sample_data 文件名反查
+        # sample.json 无帧号 -> 从 sample_data 文件名反查, 并取该帧 K 与图像尺寸
         sds = json.load(open(os.path.join(ver_dir, "sample_data.json")))
-        fn2sample = {}
+        cs = {c["token"]: c for c in json.load(open(os.path.join(ver_dir, "calibrated_sensor.json")))}
+        fn2sample, fn2K = {}, {}
         for e in sds:
             if "CAM_FRONT" in e["filename"]:
                 num = int(e["filename"].split("img-")[1].split(".")[0])
-                fn2sample["%s/%06d" % (sp, num)] = e["sample_token"]
+                key = "%s/%06d" % (sp, num)
+                fn2sample[key] = e["sample_token"]
+                fn2K[key] = (np.array(cs[e["calibrated_sensor_token"]]["camera_intrinsic"]),
+                             (e["width"], e["height"]))
         cats = {c["name"].split(".")[0]: c["token"]
                 for c in json.load(open(os.path.join(ver_dir, "category.json")))}
 
@@ -210,21 +265,29 @@ def main(argv=None):
         n_bad = 0
         for key in sorted(k for k in frames if k.startswith(sp + "/")):
             rec = frames[key]
-            a, i = process(sp, key, rec, fn2sample, cats, out, not args.skip_points)
+            K, WH = fn2K.get(key, (None, None))
+            a, i, ious = process(sp, key, rec, fn2sample, cats, out,
+                                 not args.skip_points, K, WH)
             if not a:
                 n_bad += 1
+            # --min-pts 清洗: 按框过滤 (ann 与对应 instance 同步删)
+            if args.min_pts:
+                keep = [j for j, x in enumerate(a) if x["num_lidar_pts"] >= args.min_pts]
+                dropped_by_pts += len(a) - len(keep)
+                a = [a[j] for j in keep]
+                keep_set = {x["token"] for x in a}
+                i = [x for x in i if x["first_annotation_token"] in keep_set]
             anns += a
             insts += i
-            num = int(key.split("/")[1])
+            all_ious += [v for v in ious if v is not None]
             entries[key] = {"file": "v1.0-sunrgbd-%s/sample_annotation.json" % sp,
                             "count": len(a)}
         json.dump(anns, open(os.path.join(ver_dir, "sample_annotation.json"), "w"), indent=1)
         json.dump(insts, open(os.path.join(ver_dir, "instance.json"), "w"), indent=1)
         all_entries.update(entries)
-        log.info("%s: 填充 %d 框 / %d 帧 (未匹配 %d) -> sample_annotation.json/instance.json",
-                 sp, len(anns), len(entries), n_bad)
+        log.info("%s: 填充 %d 框 / %d 帧 (未匹配 %d)", sp, len(anns), len(entries), n_bad)
 
-    # 简易质检: 尺寸/平移域 + 空框统计
+    # ---- 质检: 尺寸/平移域 + 2D 投影一致性统计 ----
     errs = []
     for sp in args.splits:
         for e in json.load(open(os.path.join(out, "v1.0-sunrgbd-%s" % sp,
@@ -233,14 +296,23 @@ def main(argv=None):
                 errs.append("尺寸异常 %s: %s" % (e["token"][:8], e["size"]))
             if np.linalg.norm(e["translation"]) > 40:
                 errs.append("平移越界 %s" % e["token"][:8])
-    log.info("质检: %d 条异常", len(errs))
+    iou_stats = {}
+    if all_ious:
+        iou = np.array(all_ious)
+        iou_stats = {"n": len(iou), "median": round(float(np.median(iou)), 3),
+                     "mean": round(float(iou.mean()), 3), "gt05": round(float(np.mean(iou > 0.5)), 3)}
+        log.info("2D 投影一致性: IoU 中位 %.2f 均值 %.2f >0.5 占比 %.0f%% (n=%d)",
+                 iou_stats["median"], iou_stats["mean"], 100 * iou_stats["gt05"], len(iou))
+    log.info("质检: %d 条尺寸/平移异常; min_pts 清洗丢弃 %d 框", len(errs), dropped_by_pts)
     for e in errs[:5]:
         log.warning("  %s", e)
 
     write_manifest(out, "detection",
-                   params=dict(splits=args.splits, limit=args.limit,
+                   params=dict(splits=args.splits, limit=args.limit, min_pts=args.min_pts,
+                               dropped_by_min_pts=dropped_by_pts,
                                frame="gravity(Rtilt)->ego", depth_scale=1.0 / 6553.5,
-                               class_map="CLASS_MAP->SUNRGBD-13"),
+                               class_map="CLASS_MAP->SUNRGBD-13",
+                               meta_cache_stats=cache_stats, proj_iou=iou_stats),
                    entries=all_entries)
     log.info("完成, 耗时 %.0fs", time.time() - t0)
     return 0

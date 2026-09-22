@@ -17,6 +17,6 @@ def test_nuscenes_bad_frame_returns_error():
 def test_occ_bad_frame_returns_error():
     t = dict(scene="s", token="t", depth="no/such/dep.png",
              fx=529.5, fy=529.5, cx=365.0, cy=265.0)
-    tok, st, err, _ = convert_one("nowhere_out", t)
+    tok, st, err, _c, _m = convert_one("nowhere_out", t)
     assert tok == "t"
     assert st == "error" and "Error" in err

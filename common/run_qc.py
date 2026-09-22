@@ -95,6 +95,10 @@ def run_qc(out_root, product, sample_every=25):
         if med > 0:
             warnings += [f"计数偏低 {key}: {e['count']} (中位数 {med:.0f})"
                          for key, e in entries.items() if e["count"] < 0.05 * med]
+        # 近距特写帧: 相机怼近拍摄, 几乎看不到场景 (QC 判据来自实测案例)
+        warnings += [f"近距特写帧 {key}: 中位深度 {e.get('median_depth', 0):.2f}m < 1.0m"
+                     for key, e in entries.items()
+                     if 0 < e.get("median_depth", 1.0) < 1.0]
         errors += _deep_check(out_root, product,
                               [e["file"] for e in entries.values()][::sample_every])
     errors += _check_intrinsics(out_root, product)

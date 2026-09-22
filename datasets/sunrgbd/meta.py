@@ -30,8 +30,14 @@ def read_var(buf, pos):
         v = parse_matrix(data)
     elif dtype in (MI_DOUBLE,):
         v = np.frombuffer(data, "<f8").copy()
+    elif dtype == MI_INT32:
+        v = np.frombuffer(data, "<i4").copy()
     elif dtype == MI_UINT32:
         v = np.frombuffer(data, "<u4").copy()
+    elif dtype == 3:    # miINT16
+        v = np.frombuffer(data, "<i2").copy()
+    elif dtype == 4:    # miUINT16
+        v = np.frombuffer(data, "<u2").copy()
     elif dtype in (MI_INT8, MI_UINT8):
         v = data
     elif dtype == MI_CHAR:
@@ -97,8 +103,14 @@ def parse_matrix(data):
     dt, nd, pos = rd_el(data, pos)
     if dt == MI_DOUBLE:
         a = np.frombuffer(nd, "<f8").copy()
+    elif dt == MI_INT32:
+        a = np.frombuffer(nd, "<i4").copy()
     elif dt == MI_UINT32:
         a = np.frombuffer(nd, "<u4").copy()
+    elif dt == 3:    # miINT16
+        a = np.frombuffer(nd, "<i2").copy()
+    elif dt == 4:    # miUINT16
+        a = np.frombuffer(nd, "<u2").copy()
     elif dt == MI_INT8:
         a = np.frombuffer(nd, "i1").copy()
     else:

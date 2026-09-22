@@ -27,10 +27,11 @@ def write_manifest(out_root, product, params, entries):
     full = {}
     for key, e in entries.items():
         p = os.path.join(out_root, e["file"])
-        full[key] = {"file": e["file"].replace("\\", "/"),
-                     "count": e.get("count", 0),
-                     "bytes": os.path.getsize(p) if os.path.exists(p) else 0,
-                     "md5": _md5(p) if os.path.exists(p) else None}
+        row = dict(e)                      # 透传调用方附加字段 (如 median_depth)
+        row["file"] = e["file"].replace("\\", "/")
+        row["bytes"] = os.path.getsize(p) if os.path.exists(p) else 0
+        row["md5"] = _md5(p) if os.path.exists(p) else None
+        full[key] = row
     manifest = {
         "generator": {"name": "rgbd2occ", "version": version.VERSION,
                       "commit": version.git_commit(),

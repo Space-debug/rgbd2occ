@@ -80,6 +80,11 @@ python main.py sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
   另抽样深检 npz/bin 规格。 
 - **打包**: `pyproject.toml`；`pip install .` 后可用 `rgbd2occ sunrgbd occ ...`
   命令（依赖 numpy/scipy/pillow）。
+- **occ 包图像**: `--with-images` 随包拷贝对应 jpg（否则包内只有标注）。
+- **检测清洗/一致性**: `sunrgbd detection --min-pts N` 丢弃点云内点不足的框；
+  每次填充自动统计 3D->2D 投影 IoU（监控用，进 manifest）。
+- **日志落盘**: 批量运行同时写 `<out>/logs/*.log`。
+- 许可 MIT（LICENSE）；版本历史见 CHANGELOG.md。
 
 ## 新数据集接入（只需三步）
 

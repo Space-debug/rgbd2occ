@@ -36,7 +36,7 @@ from functools import partial
 import numpy as np
 
 from occ import convert_frame, load_depth, load_label, mask_depth, OccAnnotations, pose
-from common.get_logger import get_logger
+from common.get_logger import attach_file, get_logger
 from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
 from common.write_manifest import write_manifest
@@ -89,28 +89,39 @@ def build_tasks(splits, limit, v3_root=None, raw_root=None, labels=True):
     return tasks
 
 
-def convert_one(out_root, task):
+def convert_one(out_root, task, img_src_root=None):
     """转一帧; 异常捕获后返回 error 不中断整批。
-    返回 (token, 状态, 错误堆栈, 可见体素数)。"""
+    返回 (token, 状态, 错误堆栈, 可见体素数, 原始深度中位数米)。
+    img_src_root 非空时把该帧 jpg 一并拷入 occ 包 (samples/CAM_FRONT/...)。"""
+    import shutil as _sh
     tok = task["token"]
     rel = os.path.join("gts", task["scene"], task["token"], "labels.npz")
     try:
+        dep_raw = load_depth(task["depth"], DEPTH_SCALE)
+        v = dep_raw[dep_raw > 0.3]
+        med = float(np.median(v)) if v.size else 0.0
+        if img_src_root and task.get("img"):
+            src = os.path.join(img_src_root, *task["img"].split("/"))
+            dst = os.path.join(out_root, *task["img"].split("/"))
+            if os.path.exists(src) and not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                _sh.copy2(src, dst)
         out = os.path.join(out_root, rel)
         if os.path.exists(out):
             with np.load(out) as d:
-                return tok, "skip", "", int((d["mask_camera"] > 0).sum())
-        dep = mask_depth(load_depth(task["depth"], DEPTH_SCALE), VALID_RANGE)
+                return tok, "skip", "", int((d["mask_camera"] > 0).sum()), med
+        dep = mask_depth(dep_raw, VALID_RANGE)
         label = load_label(task["label"]) if task.get("label") else None
         if label is not None and label.shape != dep.shape:
             raise ValueError(f"标签形状 {label.shape} != 深度 {dep.shape}")
         res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez_compressed(out, **res)
-        return tok, "ok", "", int((res["mask_camera"] > 0).sum())
+        return tok, "ok", "", int((res["mask_camera"] > 0).sum()), med
     except Exception:
         err = traceback.format_exc()
         get_logger("rgbd2occ.sunrgbd.occ").error("%s 转换失败: %s", tok, err.replace("\n", " | "))
-        return tok, "error", err, 0
+        return tok, "error", err, 0, 0.0
 
 
 def write_annotations(tasks, out_root):
@@ -149,12 +160,18 @@ def run_batch(args):
         n = write_annotations(tasks, out_root)
         log.info("annotations 重建登记帧 %d", n)
         return 0
-    fails, counts, t0, stat = {}, {}, time.time(), {}
+    attach_file(log, os.path.join(out_root, "logs",
+                                  time.strftime("run_%Y%m%d_%H%M%S.log")))
+    img_src = (args.v3_root or PATHS["nuscenes_out"]) if args.with_images else None
+    if args.with_images:
+        log.info("图像随包拷贝: <- %s", img_src)
+    fails, counts, meds, t0, stat = {}, {}, {}, time.time(), {}
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        for k, (tok, st, err, cnt) in enumerate(
-                ex.map(partial(convert_one, out_root), tasks, chunksize=8), 1):
+        for k, (tok, st, err, cnt, med) in enumerate(
+                ex.map(partial(convert_one, out_root, img_src_root=img_src), tasks, chunksize=8), 1):
             stat[st] = stat.get(st, 0) + 1
             counts[tok] = cnt
+            meds[tok] = med
             if st == "error":
                 fails[tok] = err
             if k % 200 == 0 or k == len(tasks):
@@ -167,7 +184,8 @@ def run_batch(args):
     with open(os.path.join(out_root, "semantic_classes.json"), "w", encoding="utf-8") as f:
         json.dump(semantic_classes_doc(), f, indent=1, ensure_ascii=False)
     entries = {t["token"]: {"file": 'gts/%s/%s/labels.npz' % (t["scene"], t["token"]),
-                            "count": counts.get(t["token"], 0)}
+                            "count": counts.get(t["token"], 0),
+                            "median_depth": meds.get(t["token"], 0.0)}
                for t in tasks
                if os.path.exists(os.path.join(out_root, "gts", t["scene"], t["token"], "labels.npz"))}
     write_manifest(out_root, "occ",
@@ -176,6 +194,7 @@ def run_batch(args):
                                voxel=0.4, ranges=[[-40, 40], [-40, 40], [-1, 5.4]],
                                ray_stride=4, depth_scale=DEPTH_SCALE,
                                valid_range=list(VALID_RANGE), labels=use_labels,
+                               with_images=bool(args.with_images),
                                label_mapping="pixel==semantic id (SUNRGBD-13)" if use_labels else None),
                    entries=entries)
 
@@ -267,6 +286,8 @@ def main(argv=None):
     ap.add_argument("--ann-only", action="store_true", help="只重建 annotations.json")
     ap.add_argument("--no-labels", action="store_true",
                     help="不接入 13 类语义标签 (占据记 others=0)")
+    ap.add_argument("--with-images", action="store_true",
+                    help="把对应 jpg 从 nuScenes 包拷进 occ 包 (samples/CAM_FRONT/...)")
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
     ap.add_argument("--inspect", default=None, help="渲染指定 token 的 BEV 质检图后退出")
     ap.add_argument("--inspect-warned", action="store_true",
