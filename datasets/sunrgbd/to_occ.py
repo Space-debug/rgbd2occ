@@ -105,7 +105,10 @@ def convert_one(out_root, task, img_src_root=None):
             dst = os.path.join(out_root, *task["img"].split("/"))
             if os.path.exists(src) and not os.path.exists(dst):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                _sh.copy2(src, dst)
+                try:
+                    os.link(src, dst)        # 同盘硬链接: 零拷贝, 瞬时完成
+                except OSError:
+                    _sh.copy2(src, dst)      # 跨盘/不支持时回退复制
         out = os.path.join(out_root, rel)
         if os.path.exists(out):
             with np.load(out) as d:
