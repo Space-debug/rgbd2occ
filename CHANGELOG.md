@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.3 (2026-09-22)
+- 点云线 GPU 化 (common/gpu_points.py, gpu 层近似): median(NaN-aware unfold)/梯度/
+  反投影/SOR(卷积整数计数)/斑点(负索引取模回绕)/降采样 全链在卡上
+- 实测 RTX 5090: 全链含降采样 10ms/帧 (CPU numba 144-177ms, ~15x);
+  与生产 bin 的最近邻: 中位 0.00cm / 95分位 0.00cm (KDTree, 41757 vs 41473 点 +0.68%)
+- to_nuscenes: RGBD2OCC_BACKEND=gpu 时自动启用 GPU 路径 (torch 惰性导入,
+  无 torch/CUDA 自动回退 CPU exact)
+- 检测线导出 class_map.json (37->13 类映射侧车)
+
 ## 0.9.2 (2026-09-22)
 - GPU 批量流水线接入 to_occ (--gpu-batch B): 解码进程池 -> GPU 批量消费 -> 写盘线程池,
   含 --with-images 硬链接/stride/label-vote 全参数支持, manifest 记录 backend/data_variant

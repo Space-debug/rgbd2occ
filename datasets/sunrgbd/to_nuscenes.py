@@ -32,7 +32,8 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image
 
-from common import depth_to_points, load_depth, voxel_downsample, write_nuscenes_bin
+from common import (depth_to_points, load_depth, voxel_downsample,
+                    write_nuscenes_bin)
 from common.get_logger import get_logger
 from common.run_qc import run_qc
 from common.render_bev import render_points_bev
@@ -126,10 +127,18 @@ def process_frame(job):
             img = np.array(Image.open(r["img"]).convert("RGB")
                            .resize((dep.shape[1], dep.shape[0])))
         K = r["K_native"]
-        P, C = depth_to_points(img, dep, K[0][0], K[0][2], K[1][2],
-                              raw=raw, scale=DEPTH_SCALE)
-        if DOWNSAMPLE_VOX and len(P):
-            P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64), DOWNSAMPLE_VOX)
+        if os.environ.get("RGBD2OCC_BACKEND") == "gpu":
+            from common.gpu_points import depth_to_points_downsampled_gpu
+            # GPU 近似层: 与 CPU exact 存在 ~0.7% 点数差 (文档化)
+            P, C = depth_to_points_downsampled_gpu(
+                raw, img, DEPTH_SCALE, K[0][0], K[1][1], K[0][2], K[1][2],
+                DOWNSAMPLE_VOX)
+        else:
+            P, C = depth_to_points(img, dep, K[0][0], K[0][2], K[1][2],
+                                  raw=raw, scale=DEPTH_SCALE)
+            if DOWNSAMPLE_VOX and len(P):
+                P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64),
+                                        DOWNSAMPLE_VOX)
         os.makedirs(os.path.dirname(bin_dst), exist_ok=True)
         n = write_nuscenes_bin(bin_dst, P, C)
         return key, "ok", "", n

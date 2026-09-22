@@ -369,6 +369,12 @@ def main(argv=None):
         log.info("2D 投影一致性: IoU 中位 %.2f 均值 %.2f >0.5 占比 %.0f%% (n=%d)",
                  iou_stats["median"], iou_stats["mean"], 100 * iou_stats["gt05"], len(iou))
     log.info("质检: %d 条尺寸/平移异常; min_pts 清洗丢弃 %d 框", len(errs), dropped_by_pts)
+
+    # 类别映射侧车 (occ semantic_classes.json 的检测侧对应物)
+    with open(os.path.join(out, "class_map.json"), "w", encoding="utf-8") as f:
+        json.dump({"source": "SUNRGBD 37-style classname", "target": "SUNRGBD-13",
+                   "map": CLASS_MAP, "fallback": "objects"}, f, indent=1,
+                  ensure_ascii=False)
     for e in errs[:5]:
         log.warning("  %s", e)
 
