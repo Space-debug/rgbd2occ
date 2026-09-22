@@ -125,3 +125,29 @@ def test_numba_kernels_bit_exact():
     sr._HAS_NUMBA = vs._HAS_NUMBA = True
     P1, C1 = depth_to_points(img, dep, 518.857901, 284.582449, 208.736166, **kw)
     assert np.array_equal(P0, P1) and np.array_equal(C0, C1), "numba 核出现数值偏差!"
+
+
+def test_raycast_gpu_tier_matches_cpu():
+    """GPU torch 层 vs CPU numba: 体素级一致 (无 torch/CUDA 时跳过)。"""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return  # 无 GPU 环境跳过
+    except ImportError:
+        return
+    import importlib
+    from common.deproject import deproject
+    from occ.raycast import cast_rays, _cast_torch
+    from occ.voxel_grid import make_grid
+    rc = importlib.import_module("occ.raycast")
+    raw = np.array(Image.open(os.path.join(DATA, "1.png")))
+    dep = raw.astype(np.float64) / 6553.5
+    valid = (dep > 0.3) & (dep < 8)
+    gmin, dims = make_grid(0.4)
+    pts, u, v = deproject(np.where(valid, dep, 0.0), 529.5, 529.5, 365.0, 265.0)
+    dirs = pts / (np.linalg.norm(pts, axis=1, keepdims=True) + 1e-12)
+    dists = np.linalg.norm(pts, axis=1)
+    # CPU 基准用当前环境可用路径 (numba/numpy 均已通过等价性验证)
+    cpu = cast_rays(np.zeros(3), dirs, dists, gmin, 0.4, dims, 4)
+    gpu = _cast_torch(np.zeros(3), dirs, dists, gmin, 0.4, dims, 4)
+    assert np.array_equal(cpu, gpu), "GPU raycast 与 CPU 结果不一致!"
