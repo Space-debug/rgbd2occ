@@ -8,12 +8,21 @@ RGBD 数据集 → (nuScenes devkit 格式 + Occ3D 占据标注) 转换工具集
 ```
 rgbd2occ/
 ├── main.py                  # 主生成程序: python main.py <数据集> <产物> [参数...]
-├── common/                  # 工具类库: 跨数据集、跨产物共用
-│   ├── io.py                #   数据读取: 深度/标签加载与格式归一 (米制/uint8)
-│   ├── projection.py        #   通用相机几何: deproject(含k1/k2畸变) + cam_to_ego_axes 轴变换
-│   ├── depth_filter.py      #   深度预处理: 5x5 中值+梯度剔除 (stage1) / 有效性掩膜 mask_depth
-│   ├── point_filter.py      #   点云滤波: SOR 半径 + 体素斑点 (stage2/3)
-│   └── pointcloud.py        #   depth_to_points 编排 + 体素降采样 + nuScenes bin 写出
+├── common/                  # 工具类库: 每个通用功能一个文件 (可独立优化/替换, 依赖随文件隔离)
+│   ├── load_depth.py        #   深度图 -> float64 米制
+│   ├── load_label.py        #   语义标签图 -> uint8
+│   ├── cam_to_ego_axes.py   #   相机系->自车系 (X前,Y左,Z上) 轴变换 (全库唯一一份)
+│   ├── deproject.py         #   通用反投影 (含 k1/k2 去畸变, 返回像素坐标)
+│   ├── median_gradient.py   #   深度滤波 stage1: 5x5 中值 + 梯度剔除
+│   ├── mask_depth.py        #   深度有效性掩膜
+│   ├── sor_radius.py        #   点云滤波 stage2: SOR 半径滤波
+│   ├── voxel_speckle.py     #   点云滤波 stage3: 体素斑点过滤
+│   ├── deproject_filtered.py#   v2 精确版反投影 (与 v2 字节级等价)
+│   ├── depth_to_points.py   #   点云全流程编排 (stage0-3)
+│   ├── voxel_downsample.py  #   体素降采样 (质心+颜色均值)
+│   ├── write_nuscenes_bin.py#   nuScenes bin 写出 (float32 Nx5)
+│   ├── _imread.py           #   (私有) 图像底层读取, load_depth/load_label 共用
+│   └── _nbr_count.py        #   (私有) 3x3x3 邻域计数, sor_radius/voxel_speckle 共用
 ├── nuscenes/                # nuScenes devkit 格式核心
 │   └── tables.py            #   稳定 token(md5) + 13 张表落盘
 ├── occ/                     # Occ3D 占据标注核心

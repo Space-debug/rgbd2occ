@@ -28,8 +28,7 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from PIL import Image
 
-from common.io import load_depth
-from common.pointcloud import depth_to_points, voxel_downsample, write_nuscenes_bin
+from common import depth_to_points, load_depth, voxel_downsample, write_nuscenes_bin
 from nuscenes import token, write_tables
 from .meta import load_meta
 

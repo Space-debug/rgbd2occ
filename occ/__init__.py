@@ -5,8 +5,7 @@
 (如 sunrgbd2occ.py), 复用本包完成读取/预处理/转换/登记。
 深度/标签读取在 common.io (与 nuScenes 点云管线共用), 此处重导出保持 API。
 """
-from common.io import load_depth, load_label
-from common.depth_filter import mask_depth
+from common import load_depth, load_label, mask_depth
 from .convert import FREE, OTHERS, convert_frame
 from .annotations import OccAnnotations, pose
 

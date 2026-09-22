@@ -1,20 +1,6 @@
 # -*- coding: utf-8 -*-
-"""通用相机几何: 反投影与坐标轴变换 (occ 占据与 nuScenes 点云两条线共用)。
-
-坐标约定:
-- 相机系: x 右, y 下, z 前(深度方向)
-- 自车系 (nuScenes/Occ3D 官方): X=前, Y=左, Z=上 —— 变换为 (z, -x, -y)
-"""
+"""通用反投影: 深度图 -> 相机系点云 (含 k1/k2 径向去畸变), 返回像素坐标。"""
 import numpy as np
-
-
-def cam_to_ego_axes(pts_cam):
-    """(N,3) 相机系坐标 -> 自车系坐标 (只做轴重排/取反, 不平移, 逐位精确)。"""
-    g = np.empty_like(pts_cam)
-    g[:, 0] = pts_cam[:, 2]
-    g[:, 1] = -pts_cam[:, 0]
-    g[:, 2] = -pts_cam[:, 1]
-    return g
 
 
 def deproject(depth, fx, fy, cx, cy, k1=0.0, k2=0.0):

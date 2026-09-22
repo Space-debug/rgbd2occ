@@ -9,7 +9,7 @@
 """
 import numpy as np
 
-from common.projection import cam_to_ego_axes  # noqa: F401 (共用轴变换, 此处重导出)
+from common import cam_to_ego_axes  # noqa: F401 (共用轴变换, 此处重导出)
 
 
 def make_grid(voxel, x_range=(-40, 40), y_range=(-40, 40), z_range=(-1, 5.4)):
