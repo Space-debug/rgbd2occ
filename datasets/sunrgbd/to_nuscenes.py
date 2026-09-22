@@ -34,7 +34,7 @@ from PIL import Image
 
 from common import (depth_to_points, load_depth, voxel_downsample,
                     write_nuscenes_bin)
-from common.get_logger import get_logger
+from common.get_logger import attach_file, get_logger
 from common.run_qc import run_qc
 from common.render_bev import render_points_bev
 from common.write_manifest import write_manifest
@@ -147,6 +147,21 @@ def process_frame(job):
         return key, "error", traceback.format_exc(), 0
 
 
+
+
+def decode_one_nus(task):
+    """解码 worker: 读原始深度 + RGB (不碰 GPU), 供主进程 GPU 批量消费。"""
+    try:
+        raw = np.array(Image.open(task["dep"]))
+        img = np.array(Image.open(task["img"]).convert("RGB"))
+        if raw.shape != img.shape[:2]:
+            img = np.array(Image.open(task["img"]).convert("RGB")
+                           .resize((raw.shape[1], raw.shape[0])))
+        return dict(task=task, raw=raw, img=img, err="")
+    except Exception:
+        return dict(task=task, raw=None, img=None, err=traceback.format_exc())
+
+
 def build_tables(recs, split, out):
     """v3 表构建 (逐字段移植): 按相机型号分场景, 唯一 K_native 建标定条目。"""
     by_sensor = {}
@@ -250,6 +265,89 @@ def save_failed(out, fails):
         log.info("无失败帧, 清除旧 failed.json")
 
 
+
+
+def run_batch_gpu_nus(args, out, recs):
+    """GPU 批量流水线 (nuscenes 点云线): 解码进程池 -> 主进程 GPU 批量消费 ->
+    写盘线程池。B 帧 depth_to_points_downsampled_gpu 顺序逐帧调用 (共享单一
+    CUDA 上下文), 避免多进程各自初始化 CUDA 的往返与争抢。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from common.gpu_points import depth_to_points_downsampled_gpu
+    import torch
+
+    attach_file(log, os.path.join(out, "logs",
+                                  time.strftime("nus_gpu_%Y%m%d_%H%M%S.log")))
+    log.info("GPU 批量流水线: %d 帧, B=%d, workers=%d(解码)", len(recs),
+             args.gpu_batch, args.workers)
+    decode_pool = ProcessPoolExecutor(max_workers=args.workers)
+    write_pool = ThreadPoolExecutor(max_workers=8)
+    fails, counts, t0, stat = {}, {}, time.time(), {}
+    futures = {}
+    write_errs = []
+
+    def save_one(key, task, P, C):
+        rel = "samples/LIDAR_TOP/%s/%s.pcd.bin" % (task["split"], task["name"])
+        p = os.path.join(out, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        from common.write_nuscenes_bin import write_nuscenes_bin
+        n = write_nuscenes_bin(p, P, C)
+        img_dst = os.path.join(out, "samples", "CAM_FRONT", task["split"],
+                               task["name"] + ".jpg")
+        if not os.path.exists(img_dst) and os.path.exists(task["img"]):
+            os.makedirs(os.path.dirname(img_dst), exist_ok=True)
+            import shutil as _sh
+            _sh.copy2(task["img"], img_dst)
+        return n
+
+    def flush(batch):
+        """GPU 批量消费 + 派发写盘 (单一 CUDA 上下文)。"""
+        for d in batch:
+            task = d["task"]
+            key = "%s/%s" % (task["split"], task["name"])
+            try:
+                rel = "samples/LIDAR_TOP/%s/%s.pcd.bin" % (task["split"], task["name"])
+                if os.path.exists(os.path.join(out, *rel.split("/"))):
+                    counts[key] = os.path.getsize(os.path.join(out, *rel.split("/"))) // 20
+                    stat["skip"] = stat.get("skip", 0) + 1
+                    continue
+                K = task["K_native"]
+                P, C = depth_to_points_downsampled_gpu(
+                    d["raw"], d["img"], DEPTH_SCALE,
+                    K[0][0], K[1][1], K[0][2], K[1][2], DOWNSAMPLE_VOX)
+                stat["ok"] = stat.get("ok", 0) + 1
+                futures[key] = write_pool.submit(save_one, key, task, P, C)
+            except Exception:
+                fails[key] = traceback.format_exc()
+                stat["error"] = stat.get("error", 0) + 1
+
+    decode_futs = [decode_pool.submit(decode_one_nus, r) for r in recs]
+    batch = []
+    for k, fut in enumerate(decode_futs, 1):
+        d = fut.result()
+        if d["err"]:
+            key = "%s/%s" % (d["task"]["split"], d["task"]["name"])
+            fails[key] = d["err"]
+            stat["decode_error"] = stat.get("decode_error", 0) + 1
+        else:
+            batch.append(d)
+            if len(batch) >= args.gpu_batch:
+                flush(batch)
+                batch = []
+        if k % 200 == 0 or k == len(recs):
+            log.info("  %d/%d 已解码 %s %.1f 帧/s", k, len(recs), stat, k / (time.time() - t0))
+    if batch:
+        flush(batch)
+    for key, f in list(futures.items()):
+        try:
+            counts[key] = f.result()
+        except Exception:
+            fails[key] = traceback.format_exc()
+    save_failed(out, fails)
+    write_pool.shutdown()
+    decode_pool.shutdown()
+    return fails, counts, stat, t0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--out", default=None, help="输出根目录 (默认 config.json 的 nuscenes_out)")
@@ -260,6 +358,8 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--tables-only", action="store_true", help="只重建表(用已有 meta 缓存)")
     ap.add_argument("--skip-qc", action="store_true", help="跳过自动质检")
+    ap.add_argument("--gpu-batch", type=int, default=0,
+                    help="GPU 批量流水线: 解码批大小 (需 RGBD2OCC_BACKEND=gpu; 0=多进程逐帧)")
     ap.add_argument("--inspect", default=None, metavar="SPLIT/NAME",
                     help="渲染指定帧点云 BEV (如 train/img-000001) 后退出")
     args = ap.parse_args(argv)
@@ -274,6 +374,40 @@ def main(argv=None):
         log.info("inspect -> %s", os.path.join(out, "inspect"))
         sys.exit(0)
     frames = set(int(x) for x in args.frames.split(",") if x.strip()) if args.frames else None
+    if args.gpu_batch and not args.tables_only:
+        recs = prepare_frames(args.splits, args.limit, frames, out, args.raw_root)
+        fails, counts, stat, t0 = run_batch_gpu_nus(args, out, recs)
+        for split in args.splits:
+            scenes, samples, sds = build_tables(recs, split, out)
+            log.info("%s 表: scene=%d sample=%d sample_data=%d",
+                     split, len(scenes), len(samples), len(sds))
+        intr = {"%s/%s" % (r["split"], r["name"]): {"W": r["W"], "H": r["H"],
+                                                    "K_native": r["K_native"],
+                                                    "K_640": r["K_640"]}
+                for r in recs}
+        json.dump(intr, open(os.path.join(out, "intrinsics_per_frame.json"), "w"))
+        _bk, _bkinfo = get_backend()
+        write_manifest(out, "nuscenes",
+                       params=dict(splits=args.splits, limit=args.limit,
+                                   frames=args.frames, gpu_batch=args.gpu_batch,
+                                   downsample_vox=DOWNSAMPLE_VOX, depth_scale=DEPTH_SCALE,
+                                   pipeline="median5x5+grad0.05 -> SOR(0.03,>=6) -> speckle(0.05,>=4)",
+                                   backend=_bk, backend_note=_bkinfo.get("note", ""),
+                                   data_variant=data_variant(_bk)),
+                       entries={"%s/%s" % (r["split"], r["name"]):
+                                {"file": "samples/LIDAR_TOP/%s/%s.pcd.bin" % (r["split"], r["name"]),
+                                 "count": counts.get("%s/%s" % (r["split"], r["name"]), 0)}
+                                for r in recs
+                                if os.path.exists(os.path.join(out, "samples", "LIDAR_TOP",
+                                                               r["split"], r["name"] + ".pcd.bin"))})
+        rc = 1 if fails else 0
+        if not args.skip_qc:
+            q = run_qc(out, "nuscenes")
+            log.info("质检: errors=%d warnings=%d", q["errors"], q["warnings"])
+            rc = rc or (1 if q["errors"] else 0)
+        log.info("完成: %s%s", out, " (退出码 1)" if rc else "")
+        sys.exit(rc)
+
 
     recs = prepare_frames(args.splits, args.limit, frames, out, args.raw_root)
     log.info("帧记录 %d, splits=%s, out=%s", len(recs), args.splits, out)
