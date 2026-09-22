@@ -1,0 +1,8 @@
+{
+  "log_level": "INFO",
+  "sunrgbd": {
+    "raw_root": "D:/Datasets/sunrgbd",
+    "nuscenes_out": "D:/Datasets/sunrgbd_nuscenes_v3",
+    "occ_out": "D:/Datasets/Occupancy3D-SUNRGBD"
+  }
+}

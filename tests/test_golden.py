@@ -1,0 +1,55 @@
+# -*- coding: utf-8 -*-
+"""字节级/逐元素 golden 回归: 输入与期望输出都签入仓库 (tests/data + tests/golden),
+不依赖本机任何数据集 —— 换机器也能跑。
+
+- img-000001 为 SUN RGB-D train 第 1 帧 (kv2, 730x530), 内参来自
+  SUNRGBDMeta.mat[5050] 的真实 K_native (fx=fy=529.5, cx=365, cy=265)。
+- golden bin 为 v2/v3 管线对该帧的产物 (已与 sunrgbd_nuscenes_v3 字节级一致)。
+- golden occ npz 为 to_occ 单帧模式(无深度过滤)对该帧的产物。
+任何破坏字节级等价的改动都会在这里被抓住。
+"""
+import os
+
+import numpy as np
+from PIL import Image
+
+from common import (depth_to_points, load_depth, voxel_downsample,
+                    write_nuscenes_bin)
+from occ import convert_frame
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(HERE, "data")
+GOLDEN = os.path.join(HERE, "golden")
+K = [[529.5, 0.0, 365.0], [0.0, 529.5, 265.0], [0.0, 0.0, 1.0]]  # kv2 帧1 真实内参
+
+
+def _frame1():
+    dep = load_depth(os.path.join(DATA, "1.png"), 1.0 / 6553.5)
+    img = np.array(Image.open(os.path.join(DATA, "img-000001.jpg")).convert("RGB"))
+    assert dep.shape == img.shape[:2], "fixture 形状不一致"
+    return img, dep
+
+
+def test_nuscenes_pointcloud_golden_bytes():
+    """点云全流程 (滤波->降采样->bin) 输出与 v2/v3 管线逐字节一致。"""
+    img, dep = _frame1()
+    P, C = depth_to_points(img, dep, K[0][0], K[0][2], K[1][2])
+    P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64), 0.03)
+    out = os.path.join(GOLDEN, "_tmp_out.bin")
+    try:
+        write_nuscenes_bin(out, P, C)
+        got = open(out, "rb").read()
+        want = open(os.path.join(GOLDEN, "img-000001.pcd.bin"), "rb").read()
+        assert got == want, "点云 bin 与 golden 不再字节级一致 —— 实现被改变!"
+    finally:
+        if os.path.exists(out):
+            os.remove(out)
+
+
+def test_occ_labels_golden_arrays():
+    """occ 转换 (无深度过滤) 输出与基准逐元素一致。"""
+    _, dep = _frame1()
+    res = convert_frame(dep, K[0][0], K[1][1], K[0][2], K[1][2], ray_stride=4)
+    ref = np.load(os.path.join(GOLDEN, "occ_frame1.npz"))
+    for k in ["semantics", "mask_lidar", "mask_camera"]:
+        assert np.array_equal(res[k], ref[k]), f"{k} 与 golden 不再逐元素一致"

@@ -56,6 +56,18 @@ python main.py sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
 `sunrgbd nuscenes` 首次运行解析 SUNRGBDMeta.mat 后缓存到
 `<out>/sunrgbd_meta_cache.json`；逐帧真实 K 记录在 `<out>/intrinsics_per_frame.json`。
 
+## 工程化
+
+- **配置**: 机器路径集中在根目录 `config.json`（模板 `config.example.json`；
+  环境变量 `RGBD2OCC_CONFIG` 可指定其他文件）。CLI 的 `--out/--raw-root/--v3-root` 可临时覆盖。
+- **日志**: 统一 logging（时间戳/级别/进程名，多进程可区分 worker）；
+  级别用环境变量 `RGBD2OCC_LOGLEVEL` 或 config 的 `log_level` 调整。
+- **容错**: 单帧异常不中断整批；失败帧（含堆栈）写入 `<out>/failed.json`，
+  重跑同一命令自动重试（已生成的产物跳过）；有失败帧时进程退出码为 1。
+- **测试**: `python tests/run_all.py`（零依赖运行器）或 `pytest tests/`。
+  golden 测试签入 1 帧输入与期望产物（点云 bin 与 v2/v3 管线字节级一致、
+  occ 输出逐元素一致），任何破坏等价性的实现改动都会被立即抓住。
+
 ## 新数据集接入（只需三步）
 
 1. 新建 `datasets/<name>/` 目录：`meta.py`（读该数据集的原始数据/内参/帧清单）、

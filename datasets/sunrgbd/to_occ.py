@@ -12,6 +12,8 @@
   <out-root>/annotations.json
   <out-root>/gts/<scene>/<token>/labels.npz
 ego_pose/extrinsic 置空(null): v3 中本就是占位值, 不写假的。
+容错: 单帧异常不中断整批, 失败帧(含堆栈)写入 <out-root>/failed.json, 重跑自动重试。
+路径: 默认取 config.json, CLI --out-root/--raw-root/--v3-root 覆盖。
 
 用法:
   python sunrgbd2occ.py                              # 全量 train+val
@@ -25,35 +27,39 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
+import traceback
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 
 import numpy as np
 
 from occ import convert_frame, load_depth, load_label, mask_depth, OccAnnotations, pose
+from common.get_logger import get_logger
+from config import dataset_paths
 
-V3_ROOT = r"D:\Datasets\sunrgbd_nuscenes_v3"
-SUNRGBD_ROOT = r"D:\Datasets\sunrgbd"
-OUT_ROOT = r"D:\Datasets\Occupancy3D-SUNRGBD"
+log = get_logger("rgbd2occ.sunrgbd.occ")
+
+PATHS = dataset_paths("sunrgbd")    # raw_root / nuscenes_out / occ_out
 DEPTH_SCALE = 1.0 / 6553.5          # 16bit png -> 米
 VALID_RANGE = (0.3, 8.0)            # 与 branch1 清洗管线一致
 
 
 # ---------------- 批量模式 ----------------
 
-def build_tasks(splits, limit):
+def build_tasks(splits, limit, v3_root=None, raw_root=None):
     """从 v3 表构建有序任务列表 (场景内按 timestamp+token 排序, 即帧链顺序)。"""
     tasks = []
     for sp in splits:
-        tb = os.path.join(V3_ROOT, f"v1.0-sunrgbd-{sp}")
+        tb = os.path.join(v3_root or PATHS["nuscenes_out"], f"v1.0-sunrgbd-{sp}")
         samples = {s["token"]: s for s in json.load(open(os.path.join(tb, "sample.json")))}
         scenes = {s["token"]: s for s in json.load(open(os.path.join(tb, "scene.json")))}
         cs = {c["token"]: c["camera_intrinsic"]
               for c in json.load(open(os.path.join(tb, "calibrated_sensor.json")))}
         cam_frames = [e for e in json.load(open(os.path.join(tb, "sample_data.json")))
                       if "CAM_FRONT" in e["filename"]]
-        depth_dir = os.path.join(SUNRGBD_ROOT,
+        depth_dir = os.path.join(raw_root or PATHS["raw_root"],
                                  "sunrgbd_train_depth" if sp == "train" else "sunrgbd_test_depth")
         rec = []
         for e in cam_frames:
@@ -78,14 +84,21 @@ def build_tasks(splits, limit):
 
 
 def convert_one(out_root, task):
-    out = os.path.join(out_root, "gts", task["scene"], task["token"], "labels.npz")
-    if os.path.exists(out):
-        return "skip"
-    dep = mask_depth(load_depth(task["depth"], DEPTH_SCALE), VALID_RANGE)
-    res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"])
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    np.savez_compressed(out, **res)
-    return "ok"
+    """转一帧; 异常捕获后返回 error 不中断整批。返回 (token, 状态, 错误堆栈)。"""
+    tok = task["token"]
+    try:
+        out = os.path.join(out_root, "gts", task["scene"], task["token"], "labels.npz")
+        if os.path.exists(out):
+            return tok, "skip", ""
+        dep = mask_depth(load_depth(task["depth"], DEPTH_SCALE), VALID_RANGE)
+        res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"])
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        np.savez_compressed(out, **res)
+        return tok, "ok", ""
+    except Exception:
+        err = traceback.format_exc()
+        get_logger("rgbd2occ.sunrgbd.occ").error("%s 转换失败: %s", tok, err.replace("\n", " | "))
+        return tok, "error", err
 
 
 def write_annotations(tasks, out_root):
@@ -103,26 +116,41 @@ def write_annotations(tasks, out_root):
     return len(frames)
 
 
+def save_failed(out_root, fails):
+    p = os.path.join(out_root, "failed.json")
+    if fails:
+        json.dump(fails, open(p, "w", encoding="utf-8"), indent=1)
+        log.error("失败 %d 帧, 明细 -> %s; 重跑同一命令将自动重试这些帧", len(fails), p)
+    elif os.path.exists(p):
+        os.remove(p)
+        log.info("无失败帧, 清除旧 failed.json")
+
+
 def run_batch(args):
-    tasks = build_tasks(args.splits, args.limit)
-    print(f"任务: {len(tasks)} 帧, 场景 {sorted(set(t['scene'] for t in tasks))}, "
-          f"workers={args.workers}, out={args.out_root}")
+    out_root = args.out_root or PATHS["occ_out"]
+    tasks = build_tasks(args.splits, args.limit, args.v3_root, args.raw_root)
+    log.info("任务 %d 帧, 场景 %s, workers=%d, out=%s", len(tasks),
+             sorted(set(t["scene"] for t in tasks)), args.workers, out_root)
     if args.ann_only:
-        n = write_annotations(tasks, args.out_root)
-        print(f"annotations 重建登记帧 {n}")
-        return
-    t0, done, skip = time.time(), 0, 0
+        n = write_annotations(tasks, out_root)
+        log.info("annotations 重建登记帧 %d", n)
+        return 0
+    fails, t0, stat = {}, time.time(), {}
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
-        for st in ex.map(partial(convert_one, args.out_root), tasks, chunksize=8):
-            done += st == "ok"
-            skip += st == "skip"
-            n = done + skip
-            if n % 200 == 0 or n == len(tasks):
-                print(f"  {n}/{len(tasks)} (新转 {done}, 跳过 {skip}) "
-                      f"{n / (time.time() - t0):.1f} 帧/s", flush=True)
-    n_ann = write_annotations(tasks, args.out_root)
-    print(f"完成: labels.npz 共 {done + skip}, annotations 登记帧 {n_ann}, "
-          f"耗时 {time.time() - t0:.0f}s")
+        for k, (tok, st, err) in enumerate(
+                ex.map(partial(convert_one, out_root), tasks, chunksize=8), 1):
+            stat[st] = stat.get(st, 0) + 1
+            if st == "error":
+                fails[tok] = err
+            if k % 200 == 0 or k == len(tasks):
+                log.info("  %d/%d %s %.1f 帧/s", k, len(tasks), stat,
+                         k / (time.time() - t0))
+    save_failed(out_root, fails)
+    n_ann = write_annotations(tasks, out_root)
+    log.info("完成: labels.npz 共 %d, annotations 登记帧 %d, 耗时 %.0fs%s",
+             stat.get("ok", 0) + stat.get("skip", 0), n_ann, time.time() - t0,
+             " (有失败帧, 退出码 1)" if fails else "")
+    return 1 if fails else 0
 
 
 # ---------------- 单帧模式 ----------------
@@ -150,14 +178,16 @@ def run_single(args):
     ann.save()
     sem, mc = res["semantics"], res["mask_camera"]
     occ = int(((sem < 17) & (mc == 1)).sum())
-    print(f"网格 {sem.shape} 占据={occ} free={int(((sem == 17) & (mc == 1)).sum())} "
-          f"未知={int((mc == 0).sum())} -> {out}")
+    log.info("网格 %s 占据=%d free=%d 未知=%d -> %s", sem.shape, occ,
+             int(((sem == 17) & (mc == 1)).sum()), int((mc == 0).sum()), out)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--mode", choices=["batch", "single"], default="batch")
-    ap.add_argument("--out-root", default=OUT_ROOT)
+    ap.add_argument("--out-root", default=None, help="输出根目录 (默认 config.json 的 occ_out)")
+    ap.add_argument("--raw-root", default=None, help="SUN RGB-D 原始数据根目录 (默认 config)")
+    ap.add_argument("--v3-root", default=None, help="nuScenes 格式数据根目录 (默认 config)")
     # 批量参数
     ap.add_argument("--splits", nargs="+", default=["train", "val"], choices=["train", "val"])
     ap.add_argument("--limit", type=int, default=0, help="每场景前 N 帧(试跑), 0=全量")
@@ -195,9 +225,10 @@ def main(argv=None):
         miss = [k for k in need if getattr(args, k) is None]
         if miss:
             ap.error(f"single 模式缺少参数: {', '.join('--' + k.replace('_', '-') for k in miss)}")
+        args.out_root = args.out_root or "gts"
         run_single(args)
     else:
-        run_batch(args)
+        sys.exit(run_batch(args))
 
 
 if __name__ == "__main__":
