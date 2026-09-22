@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.5 (2026-09-23)
+- 检测线 label QC GPU 化 (标签图作为颜色传 GPU 全链, 与 occ 掩膜严格同源):
+  检测线 328s -> ~200s (label QC 282s -> ~30s); 一致率数字与 CPU 版吻合 (38%)
+- 三线统一编排: python main.py sunrgbd all [--root ... --gpu-batch 16 ...]
+  (nuscenes -> occ -> detection 按依赖序, 参数自动按线翻译)
+- occ GPU 批量线 4000 帧稳态实测: 138 帧/s, QC 0 错误, 抽查 mask 0.000% 差
+- 10 万帧终版预估: occ ~12 分钟 / 点云 ~21 分钟 / 检测 ~30 分钟 (三线串行 <65 分钟)
+
 ## 0.9.4 (2026-09-23)
 - nuscenes 线 GPU 批量流水线 (--gpu-batch B): 解码进程池 -> 主进程单一 CUDA
   上下文批量消费 -> 写盘线程池 (多进程逐帧 30 帧/s -> 77.4 帧/s, 2.6x)

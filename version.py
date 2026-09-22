@@ -3,7 +3,7 @@
 import os
 import subprocess
 
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 
 
 def git_commit():

@@ -230,6 +230,20 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=
 
 
 
+
+
+def _gpu_ok():
+    """gpu 层可用且 torch CUDA 在位 (label QC 的 GPU 快路径)。"""
+    import os
+    if os.environ.get("RGBD2OCC_BACKEND") != "gpu":
+        return False
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
 LABEL_DIRS = {"train": "train13labels", "val": "test13labels"}
 DEPTH_DIRS = {"train": "sunrgbd_train_depth", "val": "sunrgbd_test_depth"}
 
@@ -256,14 +270,26 @@ def label_consistency_qc(out, frames, splits, raw_root, sample_every, depth_scal
         if not rec["boxes"] or sp not in LABEL_DIRS:
             continue
         try:
-            dep = load_depth(os.path.join(raw_root, DEPTH_DIRS[sp], "%d.png" % num), depth_scale)
-            lab = load_label(os.path.join(raw_root, LABEL_DIRS[sp], "img13labels-%06d.png" % num))
             K = per_split.get(sp, {}).get(num)
             if K is None:
                 continue
-            d1 = median_gradient(dep, (dep > 0.3) & (dep < 8))
-            P, m = deproject_filtered(d1, K[0][0], K[0][2], K[1][2])
-            C = lab[m]
+            lab = load_label(os.path.join(raw_root, LABEL_DIRS[sp], "img13labels-%06d.png" % num))
+            if _gpu_ok():
+                # gpu 层: 标签图作为"颜色"传给 GPU 全链 (median->梯度->反投影->SOR->斑点),
+                # 每点的标签自动带出, 与生成 occ 的掩膜/滤波严格同源
+                from common.gpu_points import _points_gpu_tensors
+                from PIL import Image as _Im
+                raw = np.array(_Im.open(os.path.join(raw_root, DEPTH_DIRS[sp], "%d.png" % num)))
+                img_lab = np.stack([lab] * 3, axis=2)
+                P_t, C_t = _points_gpu_tensors(raw, img_lab, depth_scale,
+                                               K[0][0], K[1][1], K[0][2], K[1][2])
+                P = P_t.cpu().numpy()
+                C = C_t[:, 0].cpu().numpy()
+            else:
+                dep = load_depth(os.path.join(raw_root, DEPTH_DIRS[sp], "%d.png" % num), depth_scale)
+                d1 = median_gradient(dep, (dep > 0.3) & (dep < 8))
+                P, m = deproject_filtered(d1, K[0][0], K[0][2], K[1][2])
+                C = lab[m]
         except Exception:
             continue
         Rt = M.T @ np.asarray(rec["Rtilt"], np.float64).T
