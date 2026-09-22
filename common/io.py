@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""数据读取: 深度图 / 语义标签图的加载与格式归一。
+"""共用数据读取: 深度图 / 语义标签图 / 图像的加载与格式归一。
 
+从 occ/data_io.py 上移为跨模块共用 (occ 标注与 nuScenes 点云两条管线都用)。
 职责边界: 只管"文件 -> 数组", 不做任何几何或清洗逻辑。
 - 深度统一输出 float64 米制 (.npy 视为已是米制, 位深图乘 depth_scale)
-- 标签统一输出 uint8 (H, W), 像素值 = 类别 id
-常见 depth_scale: RealSense 16bit = 0.001, SUN RGB-D 16bit = 1/6553.5
+- 常见 depth_scale: RealSense 16bit = 0.001, SUN RGB-D 16bit = 1/6553.5
 """
 import numpy as np
 
