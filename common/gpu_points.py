@@ -52,33 +52,58 @@ def deproject_gpu(depth, fx, fy, cx, cy, dmin=0.3, dmax=8.0):
     return P, m
 
 
+
+
+def _nbr27_gather(cnt_grid, cells, d0, d1, d2):
+    """占据格 27 邻域计数和(含自身), 单次 (M,27) gather。
+    要求 cells 距各维边界 >=1 (由调用方 ki+1 保证), 越界读不到 —— 网格
+    稀疏(占据 ~6%)时比稠密 conv3d 快数倍; 整数求和与 conv3d+零padding 精确一致。"""
+    d12 = d1 * d2
+    ix = cells // d12
+    r = cells - ix * d12
+    iy = r // d2
+    iz = r - iy * d2
+    offs = torch.tensor([(dx, dy, dz) for dx in (-1, 0, 1)
+                         for dy in (-1, 0, 1) for dz in (-1, 0, 1)],
+                        dtype=torch.int64, device=cells.device)       # (27,3)
+    shifted = (torch.stack([ix, iy, iz], 1)[:, None, :]
+               + offs[None, :, :])                                     # (M,27,3)
+    sflat = shifted[..., 0] * d12 + shifted[..., 1] * d2 + shifted[..., 2]
+    return cnt_grid[sflat.T].sum(0)
+
+
 def sor_gpu(P, R=0.03, min_nbr=6):
     """SOR: 30mm 网格计数 + 3x3 邻域卷积 (整数计数, float32 精确)。"""
     import torch.nn.functional as F
     key = torch.floor(P / R).to(torch.int64)
     mn = key.min(0).values
-    ki = key - mn
-    dims = (ki.max(0).values + 3).tolist()
-    flat = (ki[:, 0] * dims[1] + ki[:, 1]) * dims[2] + ki[:, 2]
-    grid = torch.bincount(flat, minlength=int(np.prod(dims))).to(torch.float32)
-    g3 = grid.reshape(1, 1, *dims)
-    nbr = F.conv3d(g3, torch.ones(1, 1, 3, 3, 3, device=P.device), padding=1).reshape(-1)
-    keep = nbr[flat] >= min_nbr
-    return keep
+    ki = key - mn + 1                                   # +1 margin: ±1 邻域不出界
+    d0, d1, d2 = (ki.max(0).values + 2).tolist()
+    d12 = d1 * d2
+    flat = ki[:, 0] * d12 + ki[:, 1] * d2 + ki[:, 2]
+    grid = torch.bincount(flat, minlength=d0 * d1 * d2)  # int64 稠密计数
+    cells, inv = torch.unique(flat, return_inverse=True) # 占据格 ~6%
+    nbr = _nbr27_gather(grid, cells, d0, d1, d2)
+    keep_cells = nbr >= min_nbr
+    return keep_cells[inv]
 
 
 def speckle_gpu(P, vox=0.05, gmin=(-4.0, 0.3, -1.5), min_nbr=4):
     """体素斑点过滤: 占据体素 27 邻域计数 >= min_nbr 保留。"""
     import torch.nn.functional as F
     idx = torch.floor((P - torch.tensor(gmin, dtype=torch.float64, device=P.device)) / vox).to(torch.int64)
-    dims = (idx.max(0).values + 1).tolist()
+    d0, d1, d2 = (idx.max(0).values + 3).tolist()       # +1 现有 +1 margin +1 上界
     # 负索引取模回绕: 复现 numpy occ[负索引] 的历史语义 (CPU 路径依赖此行为)
-    idx = torch.stack([idx[:, 0] % dims[0], idx[:, 1] % dims[1], idx[:, 2] % dims[2]], 1)
-    flat = (idx[:, 0] * dims[1] + idx[:, 1]) * dims[2] + idx[:, 2]
-    occ = torch.bincount(flat, minlength=int(np.prod(dims))).to(torch.float32)
-    nbr = F.conv3d(occ.reshape(1, 1, *dims), torch.ones(1, 1, 3, 3, 3, device=P.device), padding=1).reshape(-1)
-    keep_cells = (occ > 0) & (nbr >= min_nbr)
-    return keep_cells[flat]
+    idx = torch.stack([(idx[:, 0] % (d0 - 2)) + 1,
+                       (idx[:, 1] % (d1 - 2)) + 1,
+                       (idx[:, 2] % (d2 - 2)) + 1], 1)   # 回绕到 [1, d-2], margin 保证
+    d12 = d1 * d2
+    flat = idx[:, 0] * d12 + idx[:, 1] * d2 + idx[:, 2]
+    occ = torch.bincount(flat, minlength=d0 * d1 * d2)
+    cells, inv = torch.unique(flat, return_inverse=True)
+    nbr = _nbr27_gather(occ, cells, d0, d1, d2)
+    keep_cells = nbr >= min_nbr                          # cells 全部占据, occ>0 恒真
+    return keep_cells[inv]
 
 
 def downsample_gpu(P, C, vox):
@@ -112,7 +137,8 @@ def depth_to_points_downsampled_gpu(raw_u16, img, scale, fx, fy, cx, cy, vox,
     """GPU 全链 + 体素降采样, 一步到位 (点云线主入口)。返回 CPU numpy P/C。"""
     P, C = _points_gpu_tensors(raw_u16, img, scale, fx, fy, cx, cy, dmin, dmax)
     P, C = downsample_gpu(P.double(), C.double(), vox)
-    return P.cpu().numpy(), C.cpu().numpy()
+    # f32 下载: write_bin 落盘本就 cast float32, f64->f32 舍入在 GPU/CPU 端一致
+    return P.to(torch.float32).cpu().numpy(), C.cpu().numpy()
 
 
 def _points_gpu_tensors(raw_u16, img, scale, fx, fy, cx, cy, dmin=0.3, dmax=8.0):
