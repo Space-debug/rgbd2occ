@@ -381,6 +381,14 @@ def main(argv=None):
     frames = set(int(x) for x in args.frames.split(",") if x.strip()) if args.frames else None
     if args.gpu_batch and not args.tables_only:
         recs = prepare_frames(args.splits, args.limit, frames, out, args.raw_root)
+        if args.tables_first:
+            # 表先行: 只建全量表即退出 (供 occ 并行启动); 此前该分支被跳过,
+            # 导致'表先行'阶段串行跑完了整个点云转换
+            for split in args.splits:
+                scenes, samples, sds = build_tables(recs, split, out, require_bins=False)
+                log.info("%s 表先行: scene=%d sample=%d", split, len(scenes), len(samples))
+            log.info("表先行完成即退出")
+            return 0
         fails, counts, stat, t0 = run_batch_gpu_nus(args, out, recs)
         for split in args.splits:
             scenes, samples, sds = build_tables(recs, split, out)
