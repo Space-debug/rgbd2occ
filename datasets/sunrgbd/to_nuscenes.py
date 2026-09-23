@@ -298,8 +298,11 @@ def run_batch_gpu_nus(args, out, recs):
                                task["name"] + ".jpg")
         if not os.path.exists(img_dst) and os.path.exists(task["img"]):
             os.makedirs(os.path.dirname(img_dst), exist_ok=True)
-            import shutil as _sh
-            _sh.copy2(task["img"], img_dst)
+            try:
+                os.link(task["img"], img_dst)     # 同盘硬链接: 零拷贝
+            except OSError:
+                import shutil as _sh
+                _sh.copy2(task["img"], img_dst)
         return n
 
     def flush(batch):
