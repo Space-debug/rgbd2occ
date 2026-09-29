@@ -92,7 +92,8 @@ def build_tasks(splits, limit, v3_root=None, raw_root=None, labels=True):
     return tasks
 
 
-def convert_one(out_root, task, img_src_root=None, ray_stride=4, label_vote=False):
+def convert_one(out_root, task, img_src_root=None, ray_stride=4, label_vote=False,
+                voxel=0.4, ranges=((-40, 40), (-40, 40), (-1, 5.4))):
     """转一帧; 异常捕获后返回 error 不中断整批。
     返回 (token, 状态, 错误堆栈, 可见体素数, 原始深度中位数米)。
     img_src_root 非空时把该帧 jpg 一并拷入 occ 包 (samples/CAM_FRONT/...)。"""
@@ -122,6 +123,8 @@ def convert_one(out_root, task, img_src_root=None, ray_stride=4, label_vote=Fals
         if label is not None and label.shape != dep.shape:
             raise ValueError(f"标签形状 {label.shape} != 深度 {dep.shape}")
         res = convert_frame(dep, task["fx"], task["fy"], task["cx"], task["cy"], label,
+                            voxel=voxel, x_range=ranges[0], y_range=ranges[1],
+                            z_range=ranges[2],
                             ray_stride=ray_stride, raw=raw, scale=DEPTH_SCALE,
                             label_vote=label_vote)
         os.makedirs(os.path.dirname(out), exist_ok=True)
@@ -180,7 +183,8 @@ def run_batch(args):
                 progress_iter(ex.map(partial(convert_one, out_root,
                                              img_src_root=img_src,
                                              ray_stride=args.ray_stride,
-                                             label_vote=args.label_vote),
+                                             label_vote=args.label_vote,
+                                             voxel=args.voxel, ranges=args.ranges),
                                      tasks, chunksize=8),
                               total=len(tasks), desc="occ 转换"), 1):
             stat[st] = stat.get(st, 0) + 1
@@ -206,7 +210,7 @@ def run_batch(args):
     write_manifest(out_root, "occ",
                    params=dict(splits=args.splits, limit=args.limit,
                                frames=getattr(args, "frames", None),
-                               voxel=0.4, ranges=[[-40, 40], [-40, 40], [-1, 5.4]],
+                               voxel=args.voxel, ranges=args.ranges,
                                ray_stride=args.ray_stride, depth_scale=DEPTH_SCALE,
                                valid_range=list(VALID_RANGE), labels=use_labels,
                                with_images=bool(args.with_images),
@@ -497,6 +501,20 @@ def main(argv=None):
     ap.add_argument("--k1", type=float, default=0.0)
     ap.add_argument("--k2", type=float, default=0.0)
     args = ap.parse_args(argv)
+    # 细体素护栏: 官方 ±40m 范围 @0.05m = 33 亿格/帧 (内存不可行)。
+    # voxel<0.1 且未显式改范围 -> 自动切室内局部范围 (legacy 同款);
+    # 任何组合超 5 亿格/帧直接拒绝。
+    _def_ranges = (args.xrange == [-40, 40] and args.yrange == [-40, 40]
+                   and args.zrange == [-1, 5.4])
+    if args.voxel < 0.1 and _def_ranges:
+        args.xrange, args.yrange, args.zrange = [0.2, 8.0], [-4.0, 4.0], [-2.0, 3.0]
+        log.info("voxel=%.3gm: 自动切换室内局部范围 x[0.2,8] y[-4,4] z[-2,3] "
+                 "(官方 ±40m 范围在此体素下不可行)", args.voxel)
+    cells = ((args.xrange[1] - args.xrange[0]) * (args.yrange[1] - args.yrange[0])
+             * (args.zrange[1] - args.zrange[0])) / args.voxel ** 3
+    if cells > 5e8:
+        sys.exit("网格 %.1f 亿格/帧超出内存护栏 (5 亿); 请缩小范围或增大体素" % (cells / 1e8))
+    args.ranges = [list(args.xrange), list(args.yrange), list(args.zrange)]
 
     if getattr(args, "inspect", None) or getattr(args, "inspect_warned", False):
         sys.exit(run_inspect(args))

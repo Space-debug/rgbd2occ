@@ -28,6 +28,13 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=10)
     ap.add_argument("--gpu-batch", type=int, default=0, help="GPU 批量 (nuscenes+occ)")
     ap.add_argument("--ray-stride", type=int, default=4, help="occ 射线采样")
+    ap.add_argument("--voxel", type=float, default=0.4,
+                    help="occ 体素边长, 米 (默认 0.4=官方 Occ3D schema; 细体素如 "
+                         "0.05 自动切室内局部范围, 偏离官方维度)")
+    ap.add_argument("--xrange", type=float, nargs=2, default=None,
+                    help="occ X 范围 (默认随体素: 0.4->[-40,40], <0.1->[0.2,8])")
+    ap.add_argument("--yrange", type=float, nargs=2, default=None)
+    ap.add_argument("--zrange", type=float, nargs=2, default=None)
     ap.add_argument("--label-vote", action="store_true", help="occ 标签投票治理")
     ap.add_argument("--with-images", action="store_true", help="occ 随包图像")
     ap.add_argument("--min-pts", type=int, default=0, help="检测清洗")
@@ -54,6 +61,12 @@ def main(argv=None):
         occ += ["--gpu-batch", str(args.gpu_batch)]
     if args.ray_stride != 4:
         occ += ["--ray-stride", str(args.ray_stride)]
+    if args.voxel != 0.4:
+        occ += ["--voxel", str(args.voxel)]
+    for flag, val in (("--xrange", args.xrange), ("--yrange", args.yrange),
+                      ("--zrange", args.zrange)):
+        if val:
+            occ += [flag, str(val[0]), str(val[1])]
     if args.label_vote:
         occ += ["--label-vote"]
     if args.with_images:

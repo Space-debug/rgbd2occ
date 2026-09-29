@@ -58,11 +58,14 @@ def _deep_check(out_root, product, files):
                 errs.append(f"bin 异常 {rel}: {size} 字节 (应为 float32x5 的倍数)")
         else:
             with np.load(p) as d:
-                if sorted(d.files) != ["mask_camera", "mask_lidar", "semantics"]:
+                # 0.9.6+ npz 自带 voxel/gmin 元数据 (自描述网格); 旧 npz 无
+                if not {"mask_camera", "mask_lidar", "semantics"} <= set(d.files):
                     errs.append(f"npz 键异常 {rel}: {sorted(d.files)}")
                     continue
                 sem, ml, mc = d["semantics"], d["mask_lidar"], d["mask_camera"]
-                if sem.shape != (200, 200, 16) or sem.dtype != np.uint8 \
+                ok_shape = (sem.shape == (200, 200, 16)      # 官方 0.4m schema
+                            or "voxel" in d.files)            # 自描述细体素网格
+                if not ok_shape or sem.dtype != np.uint8 \
                         or ml.dtype != np.uint8 or mc.dtype != np.uint8:
                     errs.append(f"npz 规格/形状异常 {rel}")
                 if int(sem.max()) > 17:
