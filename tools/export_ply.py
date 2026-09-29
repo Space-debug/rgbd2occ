@@ -301,7 +301,9 @@ def mode_occ(args):
             continue
         tok = os.path.basename(os.path.dirname(npz_p))            # token 目录名
         scene = os.path.basename(os.path.dirname(os.path.dirname(npz_p)))
-        stem = "%s_%s" % (scene or "occ", tok)
+        fr = _frame_of_token(npz_p, tok)
+        stem = ("occ_%s_%s_%s_%s" % (fr[0], fr[1], scene, tok) if fr
+                else "%s_%s" % (scene or "occ", tok))
 
         def _centers(sel, sub=1):
             idx = np.argwhere(sel)[::sub]
@@ -536,6 +538,24 @@ def _token_of(root, split, name):
     return None, None
 
 
+def _frame_of_token(npz_p, token):
+    """token -> (split, img-XXXXXX); 从 labels.npz 向上找 devkit 表反查
+    (无表返回 None)。occ 文件名嵌入帧号, 避免与 points/boxes 跨帧误配对。"""
+    pkg_root = os.path.dirname(os.path.abspath(npz_p))
+    for _ in range(5):
+        pkg_root = os.path.dirname(pkg_root)
+        for sp in ("train", "val"):
+            sd = os.path.join(pkg_root, "v1.0-sunrgbd-%s" % sp, "sample_data.json")
+            if not os.path.exists(sd):
+                continue
+            for e in json.load(open(sd, encoding="utf-8")):
+                if (e.get("sample_token") == token
+                        and "CAM_FRONT" in e.get("filename", "")):
+                    return sp, "img-%06d" % int(
+                        e["filename"].split("img-")[1].split(".")[0])
+    return None
+
+
 def mode_demo(args):
     """一键样例可视化: 单帧产出 点云 PLY / occ PLY / 3D 框 PLY / 标注叠加 PNG /
     点云+occ BEV PNG —— 手工跑一整套导出命令的等价快捷方式。"""
@@ -575,8 +595,9 @@ def mode_demo(args):
                                os.path.join(out_dir, "bev_occ_%s.png" % name),
                                title="%s %s" % (name, tok[:8]))
         print("-- %s 完成 (token=%s)" % (name, (tok or "无表")[:8]))
-    print("打开方式: *.ply 拖入 CloudCompare; *.png 直接看 "
-          "(bev_*=俯视, preview_*=原图+2D/3D框叠加)")
+    print("打开方式: *.ply 拖入 CloudCompare (同帧文件均含 img-XXXXXX, "
+          "points/boxes/occ 同载即叠加); *.png 直接看 "
+          "(bev_*=俯视, preview_*=原图+2D框)")
 
 
 def mode_diff(args):

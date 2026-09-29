@@ -275,7 +275,8 @@ def test_demo_generates_full_set():
 
         out = _run(["demo", root, "--names", "img-000001", "--out", od])
         expect = ["points_train_img-000001.ply", "boxes_train_img-000001.ply",
-                  "fake-scene_samp1_occupied.ply", "fake-scene_samp1_free.ply",
+                  "occ_train_img-000001_fake-scene_samp1_occupied.ply",
+                  "occ_train_img-000001_fake-scene_samp1_free.ply",
                   "preview_train_img-000001.png",
                   "bev_points_img-000001.png", "bev_occ_img-000001.png"]
         for f in expect:
