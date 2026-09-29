@@ -11,6 +11,18 @@
   取代原先只有"累计退出码"的结尾
 - render_occ_bev 自动裁剪到可见 bbox(+10 格): 0.4m 网格 80x80m 画进 600px 时
   室内场景只占中心一小块, 裁剪后等效放大 (自车标记同步重映射)
+- export points --with-rgb: 重跑 CPU 反投影管线为点云着真彩色 (bin 仅存亮度;
+  需包根内参 + --raw-root 原始数据, GPU/CPU 变体点数差异已文档化)
+- 2D 框导出产物线 sunrgbd 2d: detection_meta_cache 的 gtBb2D ->
+  annotations2d.json 侧车 (cls 37 风格 + cls13 + 原图像素 bbox;
+  实测 9758 帧/64062 框 = 3D 框数 - 无 2D 数)
+- labels.npz 自带体素元数据: convert_frame 落盘 voxel/gmin (float32),
+  export occ 优先读取, 旧 npz 无键回退 --voxel/--zmin 假设
+- 批量进度条 common/progress.progress_iter: tqdm 可用显示进度条, 缺失回退
+  定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
+- export demo: 单帧一键全套可视化 (点云/occ/3D框 PLY + 叠加 PNG + 双 BEV)
+- export diff: 两份 manifest 逐帧对比 (md5 缺失回退 count+bytes;
+  退出码一致 0/有差异 1), 升级转换器/换后端后的回归验证
 - 命令行导出 tools/export_ply.py (rgbd2occ export ...):
   points (LIDAR_TOP bin -> PLY 点云, 亮度标量场+灰度着色) /
   occ (labels.npz -> PLY 体素点云, 13 类语义着色, --what occupied|free|all) /

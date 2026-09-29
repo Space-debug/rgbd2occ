@@ -53,6 +53,7 @@ rgbd2occ convert sunrgbd nuscenes --limit 3    # 每 split 前 3 帧试跑
 rgbd2occ convert sunrgbd nuscenes --frames 1,1925
 rgbd2occ convert sunrgbd nuscenes --tables-only
 rgbd2occ sunrgbd occ                       # 等价简写: 数据集名直接作子命令
+rgbd2occ convert sunrgbd 2d                # 2D gt 框 -> annotations2d.json 侧车
 rgbd2occ sunrgbd occ --help                # 产物层参数 (透传给转换入口)
 rgbd2occ sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
     --cx 365 --cy 265 --depth-scale 0.000152592 --scene s1 --token t1 --out-root out
@@ -66,10 +67,14 @@ rgbd2occ sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
 ```bash
 rgbd2occ export info   <out>                              # 数据包概览
 rgbd2occ export points <out>/samples/LIDAR_TOP/train --limit 5
+rgbd2occ export points <out>/samples/LIDAR_TOP/train --with-rgb  # 重投影着真彩色
 rgbd2occ export points <out>/samples/LIDAR_TOP/train/img-000123.pcd.bin
 rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>
 rgbd2occ export occ    <out>/gts --limit 4 --what all     # 含 free 空体素
 rgbd2occ export boxes  <out> --split train --names img-000001,img-000002
+rgbd2occ export preview <out> --names img-000001   # 原图 + 2D gt 框 + 3D 框投影
+rgbd2occ export demo   <out> --names img-000001    # 一键全套可视化 (PLY+PNG×4)
+rgbd2occ export diff   <旧manifest.json> <新manifest.json>   # 回归对比 (一致0/有差异1)
 rgbd2occ export --help          # 导出组帮助; 每个子命令亦有 --help
 python tools/read_devkit_example.py <out>   # nuScenes devkit 读取示例 (无 devkit 自动零依赖)
 ```
