@@ -22,6 +22,11 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- boxes_points 可见性修正 (反馈: "没有原始点云"): 含 face 的 PLY 在
+  CloudCompare 中按网格导入、孤立顶点默认不渲染 —— 合并文件里的点云改为
+  小八面体 surfel 实体化 (--point-size 0.02, 0=关闭), 真彩 RGB 回退补齐
+  (此前 --rgb 在 boxes 路径因 raw_root 缺失静默变灰度); 检测附证: 框内点数
+  与检测线 num_lidar_pts 9/9 逐框一致, 管顶点到边线距离 max=0.015m=半径
 - preview 改为默认只画 2D gt 框 (反馈: 3D 框投影对 2D 图像无必要),
   --with-3d 可选叠加; 2D 框边缘准确性实测: 原始坐标 vs MATLAB 1-based 修正
   (-1px) 放大 3x 无可分辨差异, 边缘松散源自官方 2D 标注本身 (诊断图见

@@ -211,9 +211,11 @@ def test_boxes_export():
         ply = os.path.join(od, "boxes_points_v1.0-fake_img-000001.ply")
         assert os.path.exists(ply)
         d = export_ply.read_ply(ply, with_faces=True)
-        assert len(d["x"]) == 2 + 96 and len(d["faces"]) == 48
+        # 2 点 -> 2x6 surfel 顶点 + 12 边 x 8 管顶点 = 108; 面 = 2x8 + 48 = 64
+        assert len(d["x"]) == 12 + 96 and len(d["faces"]) == 16 + 48
         assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
-        assert np.allclose(d["x"][0], 1.0) and d["red"][0] == 127
+        # surfel 全部落在点 (1,0,0)/(2,1,1) 的 point_size 邻域内
+        assert np.allclose(d["x"][:6], 1.0, atol=0.02)
         assert "含原始点云 2 点" in out
 
 

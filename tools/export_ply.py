@@ -364,6 +364,24 @@ def _edge_tube(A, B, r):
     return verts, faces
 
 
+def _points_as_octahedra(xyz, rgb, r):
+    """点 -> 小八面体 surfel (每点 6 顶点 8 面): CloudCompare 对含 face 的 PLY
+    只渲染面、不渲染孤立顶点, 点必须实体化才可见。r=0 时原样返回。"""
+    if r <= 0 or not len(xyz):
+        return xyz, rgb, []
+    n = len(xyz)
+    apex = np.array([[0, 0, r], [r, 0, 0], [0, r, 0], [-r, 0, 0],
+                     [0, -r, 0], [0, 0, -r]], np.float64)
+    verts = (xyz[:, None, :] + apex[None, :, :]).reshape(-1, 3)
+    vcols = np.repeat(rgb, 6, axis=0)
+    tris = [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1),
+            (5, 2, 1), (5, 3, 2), (5, 4, 3), (5, 1, 4)]
+    faces = []
+    for b in range(0, n * 6, 6):
+        faces.extend([[a0 + b, a1 + b, a2 + b] for a0, a1, a2 in tris])
+    return verts, vcols, faces
+
+
 def mode_boxes(args):
     ver = args.src
     if not os.path.basename(ver).startswith("v1.0-"):
@@ -412,13 +430,25 @@ def mode_boxes(args):
         pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
         inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
         p_xyz, p_rgb = pts[:, :3], np.repeat(inten[:, None], 3, 1)
-        if getattr(args, "rgb", False) and getattr(args, "raw_root", None):
-            got = _regen_rgb(bin_p, args.raw_root)
-            if got is not None:
-                p_xyz, p_rgb = got
-        xyz, rgb = [p_xyz], [p_rgb]
-        faces, base = [], len(xyz[0])
-        n_pts = base
+        if getattr(args, "rgb", False):
+            raw_root = getattr(args, "raw_root", None)
+            if not raw_root:
+                try:
+                    from config import dataset_paths
+                    raw_root = dataset_paths("sunrgbd")["raw_root"]
+                except Exception:
+                    raw_root = None
+            if raw_root:
+                got = _regen_rgb(bin_p, raw_root)
+                if got is not None:
+                    p_xyz, p_rgb = got
+        n_pts = len(p_xyz)
+        # CC 对含 face 的 PLY 不渲染孤立顶点: 点实体化为小八面体 (可 --point-size 0 关)
+        s_xyz, s_rgb, s_faces = _points_as_octahedra(
+            p_xyz, p_rgb, getattr(args, "point_size", 0.02))
+        xyz, rgb = [s_xyz], [s_rgb]
+        faces, base = list(s_faces), len(s_xyz)
+        n_pts = len(p_xyz)
         for a in alist:
             cname = cats.get(inst.get(a["instance_token"], {}).get("category_token", ""),
                              "objects")
@@ -565,7 +595,7 @@ def mode_demo(args):
             with_rgb=args.rgb, raw_root=args.raw_root))
         mode_boxes(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0,
-            radius=0.015, rgb=args.rgb,
+            radius=0.015, point_size=0.02, rgb=args.rgb,
             raw_root=args.raw_root, out=out_dir))
         if tok:
             mode_occ(argparse.Namespace(
@@ -761,6 +791,9 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--limit", type=int, default=0, help="前 N 帧")
     p.add_argument("--radius", type=float, default=0.015,
                    help="线框管半径, 米 (默认 0.015)")
+    p.add_argument("--point-size", type=float, default=0.02,
+                   help="并入点云的 surfel 八面体半径, 米 (默认 0.02; 0=孤立顶点, "
+                        "部分查看器不渲染)")
     p.add_argument("--rgb", action="store_true",
                    help="并入的点云着真彩色 (需 --raw-root 原始数据)")
     p.add_argument("--raw-root", default=None)
