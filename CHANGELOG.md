@@ -11,6 +11,9 @@
   info (数据包概览);
   二进制 PLY 零第三方依赖, CloudCompare 直接打开 (自车系 Z 向上即正视角);
   输出默认当前目录 rgbd2occ_export/, --limit/--names 支持逗号分隔多帧
+- export preview: 2D gt 框 + 3D 框投影叠加相机图 -> PNG (数据全来自数据包内缓存)
+- gpu 后端可用性检查补 triton (occ 批量射线核依赖 triton; 此前只查 torch,
+  缺 triton 时三线编排在 occ 阶段中途崩溃而非整体降级 fast)
 - **内部包改名 nuscenes/ -> nustables/**: 消除与 pip 的 nuscenes-devkit 的顶层包名
   冲突 (曾致 pip 安装后 rgbd2occ 入口在装有 devkit 的环境里 import 错包;
   非 editable 安装甚至会覆盖 devkit 的 __init__.py)。改动仅 3 处 import +
