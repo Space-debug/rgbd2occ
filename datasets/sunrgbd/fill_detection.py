@@ -30,7 +30,7 @@ from common.load_label import load_label
 from common.median_gradient import median_gradient
 from common.deproject_filtered import deproject_filtered
 from common.write_manifest import write_manifest
-from nuscenes import token
+from nustables import token
 from .meta import load_meta
 from .labels import CLASSES_13
 from config import dataset_paths

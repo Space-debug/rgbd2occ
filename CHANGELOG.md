@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.6 (2026-09-29)
+- **统一命令行 rgbd2occ**: main.py 改 argparse 子命令树 —— list / export
+  (points/occ/boxes/info) / convert / 数据集名直接作子命令 (rgbd2occ sunrgbd occ
+  向后兼容), 每一层 (顶层/导出组/子命令/产物入口) 均有 --help; 新增 --version
+- 命令行导出 tools/export_ply.py (rgbd2occ export ...):
+  points (LIDAR_TOP bin -> PLY 点云, 亮度标量场+灰度着色) /
+  occ (labels.npz -> PLY 体素点云, 13 类语义着色, --what occupied|free|all) /
+  boxes (sample_annotation -> PLY 彩色线框, nuScenes wlh+四元数) /
+  info (数据包概览);
+  二进制 PLY 零第三方依赖, CloudCompare 直接打开 (自车系 Z 向上即正视角);
+  输出默认当前目录 rgbd2occ_export/, --limit/--names 支持逗号分隔多帧
+- **内部包改名 nuscenes/ -> nustables/**: 消除与 pip 的 nuscenes-devkit 的顶层包名
+  冲突 (曾致 pip 安装后 rgbd2occ 入口在装有 devkit 的环境里 import 错包;
+  非 editable 安装甚至会覆盖 devkit 的 __init__.py)。改动仅 3 处 import +
+  pyproject/README; devkit 示例的 `import nuscenes` 现在无歧义指向官方包
+- tools/read_devkit_example.py: nuScenes devkit 读取示例 (实测 v1.0-sunrgbd-train
+  可直接 NuScenes(version=..., dataroot=...) 挂载), 未装 devkit 自动退回零依赖
+  模式; 两条路径输出一致
+- 修复 to_occ 单帧模式 (run_single 调用了未导入的 load_depth)
+- 新增 tests/test_export_ply.py (8 项)
+- tools/read_devkit_example.py: nuScenes devkit 读取示例 (实测 v1.0-sunrgbd-train
+  可直接 NuScenes(version=..., dataroot=...) 挂载), 未装 devkit 自动退回零依赖
+  模式; 两条路径输出一致
+- 新增 tests/test_export_ply.py (8 项)
+
 ## 0.9.5 (2026-09-23)
 - 检测线 label QC GPU 化 (标签图作为颜色传 GPU 全链, 与 occ 掩膜严格同源):
   检测线 328s -> ~200s (label QC 282s -> ~30s); 一致率数字与 CPU 版吻合 (38%)

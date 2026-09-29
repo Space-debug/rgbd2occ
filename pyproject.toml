@@ -13,7 +13,7 @@ dependencies = ["numpy", "scipy", "pillow"]
 rgbd2occ = "main:main"
 
 [tool.setuptools]
-packages = ["common", "nuscenes", "occ", "datasets", "datasets.sunrgbd", "tests"]
+packages = ["common", "nustables", "occ", "datasets", "datasets.sunrgbd", "tools", "tests"]
 py-modules = ["main", "config", "version"]
 
 [tool.setuptools.dynamic]

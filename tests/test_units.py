@@ -9,7 +9,7 @@ from common import cam_to_ego_axes, mask_depth, write_nuscenes_bin
 from occ import FREE, OTHERS, convert_frame
 from occ.annotations import OccAnnotations
 from occ.voxel_grid import make_grid
-from nuscenes import NU_TABLES, token, write_tables
+from nustables import NU_TABLES, token, write_tables
 
 
 def test_cam_to_ego_axes():

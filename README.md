@@ -23,7 +23,7 @@ rgbd2occ/
 │   ├── write_nuscenes_bin.py#   nuScenes bin 写出 (float32 Nx5)
 │   ├── _imread.py           #   (私有) 图像底层读取, load_depth/load_label 共用
 │   └── _nbr_count.py        #   (私有) 3x3x3 邻域计数, sor_radius/voxel_speckle 共用
-├── nuscenes/                # nuScenes devkit 格式核心
+├── nustables/               # nuScenes devkit 格式核心
 │   └── tables.py            #   稳定 token(md5) + 13 张表落盘
 ├── occ/                     # Occ3D 占据标注核心
 │   ├── voxel_grid.py        #   官方自车系网格 X前/Y左/Z上 (整除截断, 200x200x16)
@@ -42,21 +42,45 @@ rgbd2occ/
 └── README.md
 ```
 
-## 用法
+## 用法 (统一命令行, 每层均有 --help)
 
 ```bash
-python main.py                                    # 列出已注册数据集/产物
-python main.py sunrgbd nuscenes                   # 全量 -> nuScenes 格式 (断点续跑)
-python main.py sunrgbd nuscenes --limit 3         # 每 split 前 3 帧试跑
-python main.py sunrgbd nuscenes --frames 1,1925   # 指定帧号
-python main.py sunrgbd nuscenes --tables-only     # 只重建表
-python main.py sunrgbd occ                        # 全量 -> Occ 标注 (v3 表驱动)
-python main.py sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
+rgbd2occ                                   # 全局帮助 + 已注册数据集/产物
+rgbd2occ list                              # 注册表 + config 路径
+rgbd2occ convert sunrgbd nuscenes          # 全量 -> nuScenes 格式 (断点续跑)
+rgbd2occ convert sunrgbd nuscenes --limit 3    # 每 split 前 3 帧试跑
+rgbd2occ convert sunrgbd nuscenes --frames 1,1925
+rgbd2occ convert sunrgbd nuscenes --tables-only
+rgbd2occ sunrgbd occ                       # 等价简写: 数据集名直接作子命令
+rgbd2occ sunrgbd occ --help                # 产物层参数 (透传给转换入口)
+rgbd2occ sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
     --cx 365 --cy 265 --depth-scale 0.000152592 --scene s1 --token t1 --out-root out
 ```
 
 `sunrgbd nuscenes` 首次运行解析 SUNRGBDMeta.mat 后缓存到
 `<out>/sunrgbd_meta_cache.json`；逐帧真实 K 记录在 `<out>/intrinsics_per_frame.json`。
+
+## 查看 / 导出 (CloudCompare) / devkit 读取
+
+```bash
+rgbd2occ export info   <out>                              # 数据包概览
+rgbd2occ export points <out>/samples/LIDAR_TOP/train --limit 5
+rgbd2occ export points <out>/samples/LIDAR_TOP/train/img-000123.pcd.bin
+rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>
+rgbd2occ export occ    <out>/gts --limit 4 --what all     # 含 free 空体素
+rgbd2occ export boxes  <out> --split train --names img-000001,img-000002
+rgbd2occ export --help          # 导出组帮助; 每个子命令亦有 --help
+python tools/read_devkit_example.py <out>   # nuScenes devkit 读取示例 (无 devkit 自动零依赖)
+```
+
+- 产物导出为**二进制 PLY**（零第三方依赖），CloudCompare 直接拖入即可：
+  points=点云（intensity 标量场+灰度着色）、occ=体素点云（13 类语义着色，同 BEV 质检图）、
+  boxes=逐帧 3D 框彩色线框（nuScenes wlh+四元数）。坐标系=自车系 X前/Y左/Z上，
+  与 CloudCompare 默认 Z 轴向上一致；输出默认当前目录 `rgbd2occ_export/`（`--out` 可改）。
+- `pip install .` 后以上均以 `rgbd2occ` 命令调起（未安装时 `python main.py ...` 等价）。
+- devkit 挂载：表目录名 `v1.0-sunrgbd-<split>` 遵循 nuScenes `v1.0-*` 约定，
+  `NuScenes(version="v1.0-sunrgbd-train", dataroot=<out>)` 可直接加载
+  （`pip install nuscenes-devkit`；差异点见 tools/read_devkit_example.py 文档串）。
 
 ## 工程化
 

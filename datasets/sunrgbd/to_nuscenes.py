@@ -38,7 +38,7 @@ from common.get_logger import attach_file, get_logger
 from common.run_qc import run_qc
 from common.render_bev import render_points_bev
 from common.write_manifest import write_manifest
-from nuscenes import token, write_tables
+from nustables import token, write_tables
 from .meta import load_meta
 from .labels import CLASSES_13
 from common.backends import data_variant, get_backend
