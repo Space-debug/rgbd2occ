@@ -22,6 +22,15 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- **修复 3D 框朝向真 bug**: SUN RGB-D 64258 框实测 15.6% basis 为镜像基
+  (det<0)、约半数非严格正交、1 例 NaN —— 直接 rot_to_quat 产出错误姿态
+  (img-000001 主 table 框与基准 R 差 1.69)。新增 fill_detection.proper_rotation:
+  取反一列消镜像 (盒体张成不变) + SVD 极分解投影; 检测线三处 basis 消费点
+  统一走净化路径后重建 sample_annotation, 复验 9/9 框 R 差 3.8e-07、
+  框内点数与统计一致; 附四项数值诊断 (bin 投影回图 99.8% / 独立重推占据
+  IoU=1.0000 / 占据-点云中位距 0.19m) 证明点云与占据链路本身无误
+- occ 导出文件名嵌入帧号 (occ_<split>_img-XXXXXX_...): 消除与 points/boxes
+  跨帧误配对 (此前 kv1 token 文件实为 img-002202, 易与 img-000001 点云错配)
 - 导出表示按 _legacy 验证过的方案重构 (反馈): points=纯 RGB 点云单文件
   (无标量场, --with-rgb 真彩); boxes=3D 框连续细管线框网格单文件 (与点云
   分文件, CC 中同载叠加 —— 含 face 的 PLY 在 CC 按网格导入不渲染孤立顶点,
