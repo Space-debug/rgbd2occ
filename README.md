@@ -162,7 +162,7 @@ nuScenes devkit 格式（to_nuscenes）:
 性能: median_gradient 对无 NaN 窗口走 np.partition 快路径 (与 nanmedian 逐位一致,
 golden 锁定), 点云线 ~10 帧/s(10核) -> 实测新帧率 ~40+/s(16核)。
 关键约定: 轴序=自车系 X前/Y左/Z上; 未知=mask==0(语义名义 17); 位姿无真值置空 null;
-帧链 prev/next 首尾 "EOF"; 体素 0.4m, (200,200,16)。
+帧链 prev/next 首尾 "EOF"; 体素 0.4m, (200,200,16) —— 与官方 Occupancy3D-nuScenes-v1.0-mini 实测逐维一致 (0.4m/±40m/[-1,5.4m] 为 Occ3D 官方规格, 导出 PLY 的立方体尺寸即体素真尺寸; 室内如需更细分辨率可 convert sunrgbd occ --voxel 0.2, 但将偏离官方 schema 维度)。
 
 深度尺度: **/6553.5** (已用椅高物理检验钉死: 实测高/框高中位 1.00;
 官方 toolbox 的 /8000 位运算解码不适用于本数据分发版, 勿改)。
