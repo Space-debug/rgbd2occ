@@ -72,6 +72,38 @@ def test_points_limit_and_names():
         assert "img-000003.ply" in os.listdir(od)
 
 
+def test_points_with_rgb():
+    """--with-rgb: 重跑 CPU 反投影管线, PLY 顶点带真彩色 (非灰度)。"""
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as raw, \
+            tempfile.TemporaryDirectory() as od:
+        root = os.path.join(td, "pkg")
+        os.makedirs(os.path.join(root, "samples", "LIDAR_TOP", "train"))
+        os.makedirs(os.path.join(root, "samples", "CAM_FRONT", "train"))
+        np.zeros((12, 5), np.float32).tofile(
+            os.path.join(root, "samples", "LIDAR_TOP", "train", "img-000001.pcd.bin"))
+        json.dump({"train/img-000001": {
+            "W": 20, "H": 20,
+            "K_native": [[200.0, 0, 10.0], [0, 200.0, 10.0], [0, 0, 1]], "K_640": []}},
+            open(os.path.join(root, "intrinsics_per_frame.json"), "w"))
+        # 原始数据: 3m 均匀深度 + 四象限彩色图 -> 反投影点颜色应非灰度
+        os.makedirs(os.path.join(raw, "sunrgbd_train_depth"))
+        os.makedirs(os.path.join(raw, "SUNRGBD-train_images"))
+        Image.fromarray(np.full((20, 20), int(3 * 6553.5), np.uint16)).save(
+            os.path.join(raw, "sunrgbd_train_depth", "1.png"))
+        quad = np.zeros((20, 20, 3), np.uint8)
+        quad[:10, :10] = (255, 0, 0); quad[:10, 10:] = (0, 255, 0)
+        quad[10:, :10] = (0, 0, 255); quad[10:, 10:] = (255, 255, 0)
+        Image.fromarray(quad).save(os.path.join(raw, "SUNRGBD-train_images",
+                                                "img-000001.jpg"))
+        _run(["points", os.path.join(root, "samples", "LIDAR_TOP", "train"),
+              "--with-rgb", "--raw-root", raw, "--out", od])
+        d = export_ply.read_ply(os.path.join(od, "img-000001.ply"))
+        assert len(d["x"]) > 1
+        cols = np.stack([d["red"], d["green"], d["blue"]], 1)
+        assert len(np.unique(cols, axis=0)) >= 2      # 真彩色: 至少两种颜色
+
+
 def test_occ_export_occupied_default():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         tok_dir = os.path.join(td, "sunrgbd-train-kv1", "00b1d48e")

@@ -146,23 +146,86 @@ def _collect_npz(src, limit, names):
 
 # ---------------- 导出模式 ----------------
 
+DEPTH_SCALE = 1.0 / 6553.5      # 与 to_nuscenes 一致的深度解码尺度
+DOWNSAMPLE_VOX = 0.03           # 与点云线一致的降采样体素
+
+
+def _find_pkg_root(path):
+    """从产物文件向上找数据包根 (含 intrinsics_per_frame.json 的目录)。"""
+    p = os.path.dirname(os.path.abspath(path))
+    for _ in range(5):
+        if os.path.exists(os.path.join(p, "intrinsics_per_frame.json")):
+            return p
+        p = os.path.dirname(p)
+    return None
+
+
+def _regen_rgb(bin_p, raw_root):
+    """重跑 CPU 反投影管线为点云着真彩色 (bin 只存亮度)。
+    返回 (P float32, C uint8); 原始数据/内参不可得时返回 None。"""
+    from PIL import Image
+    from common import depth_to_points, voxel_downsample
+    root = _find_pkg_root(bin_p)
+    if root is None:
+        print("跳过着色: 未找到 intrinsics_per_frame.json (需在数据包内)", bin_p)
+        return None
+    name = os.path.basename(bin_p)[:-8]
+    split = os.path.basename(os.path.dirname(bin_p))
+    intr = json.load(open(os.path.join(root, "intrinsics_per_frame.json"),
+                          encoding="utf-8"))
+    meta = intr.get("%s/%s" % (split, name))
+    dep_dir = ("sunrgbd_train_depth" if split == "train" else "sunrgbd_test_depth")
+    img_dir = ("SUNRGBD-train_images" if split == "train" else "SUNRGBD-test_images")
+    dep_p = os.path.join(raw_root, dep_dir, "%d.png" % int(name.split("-")[1]))
+    jpg_p = os.path.join(raw_root, img_dir, name + ".jpg")
+    if meta is None or not (os.path.exists(dep_p) and os.path.exists(jpg_p)):
+        print("跳过着色: 缺 %s / %s / 内参" % (dep_p, jpg_p))
+        return None
+    raw = np.array(Image.open(dep_p))
+    img = np.array(Image.open(jpg_p).convert("RGB"))
+    if raw.shape != img.shape[:2]:
+        img = np.array(Image.fromarray(img).resize((raw.shape[1], raw.shape[0])))
+    K = meta["K_native"]
+    P, C = depth_to_points(img, raw.astype(np.float64) * DEPTH_SCALE,
+                           K[0][0], K[0][2], K[1][2], raw=raw, scale=DEPTH_SCALE)
+    if DOWNSAMPLE_VOX and len(P):
+        P, C = voxel_downsample(P.astype(np.float64), C.astype(np.float64),
+                                DOWNSAMPLE_VOX)
+    return P.astype(np.float32), C.astype(np.uint8)
+
+
 def mode_points(args):
     out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
     os.makedirs(out_dir, exist_ok=True)
     names = _split_names(args.names)
     bins = _collect_bins(args.src, args.limit, names)
     total = 0
+    if args.with_rgb and not args.raw_root:
+        try:
+            from config import dataset_paths
+            args.raw_root = dataset_paths("sunrgbd")["raw_root"]
+        except Exception:
+            pass
+    if args.with_rgb and not args.raw_root:
+        print("--with-rgb 需要 --raw-root 指向 SUN RGB-D 原始数据 (深度 png + 原图 jpg)")
     for bin_p in bins:
         pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
         if not len(pts):
             print("跳过空点云", bin_p)
             continue
-        xyz = pts[:, :3]
+        xyz, rgb = pts[:, :3], None
         inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
-        if args.color == "intensity":
-            rgb = np.repeat(inten[:, None], 3, 1)
-        else:
-            rgb = np.full((len(pts), 3), 255, np.uint8)
+        if args.with_rgb and args.raw_root:
+            got = _regen_rgb(bin_p, args.raw_root)
+            if got is not None:
+                xyz, rgb = got
+                if len(xyz) != len(pts):
+                    print("注: %s 重投影 %d 点 vs bin %d 点 (后端变体差异, 仅影响可视化)"
+                          % (os.path.basename(bin_p), len(xyz), len(pts)))
+                inten = np.clip(rgb.mean(1), 0, 255).astype(np.uint8)
+        if rgb is None:
+            rgb = (np.repeat(inten[:, None], 3, 1) if args.color == "intensity"
+                   else np.full((len(pts), 3), 255, np.uint8))
         dst = os.path.join(out_dir, os.path.basename(bin_p)[:-8] + ".ply")
         n = write_ply(dst, xyz, rgb, intensity=inten)
         total += n
@@ -466,6 +529,10 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--out", default=None, help="输出目录 (默认 ./rgbd2occ_export)")
     p.add_argument("--color", choices=["intensity", "none"], default="intensity",
                    help="intensity=按亮度灰度着色 (默认), none=白色")
+    p.add_argument("--with-rgb", action="store_true",
+                   help="重跑 CPU 反投影为点云着真彩色 (需包根内参 + --raw-root 原始数据)")
+    p.add_argument("--raw-root", default=None,
+                   help="SUN RGB-D 原始数据根 (默认取 config 的 raw_root)")
     p.set_defaults(handler=mode_points)
 
     p = sub.add_parser("occ", help="labels.npz -> PLY 体素点云 (按类着色)")
