@@ -4,7 +4,8 @@
 用法:
   rgbd2occ                                   # 列出已注册数据集与全局帮助
   rgbd2occ list                              # 注册表 + config 路径
-  rgbd2occ export --help                     # 导出组: points/occ/boxes/info
+  rgbd2occ doctor                            # 环境/依赖体检 (各线可用后端)
+  rgbd2occ export --help                     # 导出组: points/occ/boxes/preview/info
   rgbd2occ export points <bins目录> --limit 5 # bin -> CloudCompare PLY
   rgbd2occ export occ <labels.npz|gts> ...    # 占据 GT -> PLY (按类着色)
   rgbd2occ export boxes <数据包> --names img-000001   # 3D 框 -> PLY 线框
@@ -19,7 +20,7 @@ import importlib
 import sys
 
 from datasets import DATASETS
-from tools import export_ply
+from tools import doctor, export_ply
 from version import VERSION
 
 
@@ -40,6 +41,9 @@ def build_parser():
 
     p = sub.add_parser("list", help="列出已注册数据集/产物与 config 路径")
     p.set_defaults(handler=export_ply.mode_list)
+
+    p = sub.add_parser("doctor", help="环境/依赖体检: 各产物线可用后端与路径配置")
+    p.set_defaults(handler=doctor.run)
 
     p = sub.add_parser("export", help="产物导出: CloudCompare PLY / 标注可视化 / 数据包信息")
     exp_sub = p.add_subparsers(dest="export_cmd", required=True,

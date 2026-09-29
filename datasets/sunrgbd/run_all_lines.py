@@ -72,11 +72,13 @@ def main(argv=None):
     import time
     t0 = time.time()
     log.info("===== 表先行 (供 occ 并行启动) =====")
+    rc_tables = 0
     try:
         importlib.import_module("datasets.sunrgbd.to_nuscenes").main(
             nus + ["--tables-first"] + (["--skip-qc"] if args.skip_qc else []))
     except SystemExit as e:
-        rc = rc or (e.code or 0)
+        rc_tables = e.code or 0
+    rc = rc or rc_tables
     log.info("===== 表先行完成 %.0fs =====", time.time() - t0)
 
     # ---- 阶段1: 点云线(GPU) 与 occ 线(GPU) 并行 (依赖仅为表, 计算独立) ----
@@ -110,13 +112,29 @@ def main(argv=None):
     # ---- 阶段2: 检测线收尾 (依赖点云 bin, 只补 num_lidar_pts) ----
     t2 = time.time()
     log.info("===== detection points-only 开始 =====")
+    rc_det_post = 0
     try:
-        rc_line = importlib.import_module(lines[2][1]).main(det_post)
-        rc = rc or (rc_line or 0)
+        rc_det_post = importlib.import_module(lines[2][1]).main(det_post) or 0
+        rc = rc or rc_det_post
     except SystemExit as e:
-        rc = rc or (e.code or 0)
-    log.info("===== detection points-only 结束 %.0fs (累计退出码 %s) =====",
-             time.time() - t2, rc)
+        rc_det_post = e.code or 0
+        rc = rc or rc_det_post
+    log.info("===== detection points-only 结束 %.0fs =====", time.time() - t2)
+
+    # ---- 结束摘要: 逐线退出码 + 续跑提示 (阶段码归并到产物线) ----
+    def _agg(*vals):
+        return max((v or 0) for v in vals)
+
+    line_rc = {"nuscenes": _agg(rc_tables, results.get("nuscenes")),
+               "occ": _agg(results.get("occ")),
+               "detection": _agg(results.get("detection-pre"), rc_det_post)}
+    log.info("===== 汇总: 总耗时 %.0fs =====", time.time() - t0)
+    for name, code in line_rc.items():
+        log.info("  %-10s %s", name, "OK" if code == 0 else "失败 (退出码 %s)" % code)
+    bad = [n for n, c in line_rc.items() if c]
+    if bad:
+        log.warning("失败线: %s; 重跑同一命令可续跑 (已完成产物自动跳过);"
+                    " 疑似环境问题先跑: rgbd2occ doctor", ", ".join(bad))
     sys.exit(rc)
 
 

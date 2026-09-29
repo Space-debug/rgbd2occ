@@ -1,9 +1,16 @@
 # Changelog
 
 ## 0.9.6 (2026-09-29)
-- **统一命令行 rgbd2occ**: main.py 改 argparse 子命令树 —— list / export
-  (points/occ/boxes/info) / convert / 数据集名直接作子命令 (rgbd2occ sunrgbd occ
-  向后兼容), 每一层 (顶层/导出组/子命令/产物入口) 均有 --help; 新增 --version
+- **统一命令行 rgbd2occ**: main.py 改 argparse 子命令树 —— list / doctor /
+  export (points/occ/boxes/preview/info) / convert / 数据集名直接作子命令
+  (rgbd2occ sunrgbd occ 向后兼容), 每一层均有 --help; 新增 --version
+- rgbd2occ doctor: 环境/依赖体检 —— 基础依赖 / 加速项 (cv2/numba/torch/triton) /
+  各产物线可用后端 / config 路径, 基础依赖缺失退出码 1 (实测可提前识别
+  "有 torch 无 triton -> occ 线不可 gpu" 这类环境坑)
+- run_all_lines 结束汇总: 逐线退出码 (nuscenes/occ/detection) + 失败续跑提示,
+  取代原先只有"累计退出码"的结尾
+- render_occ_bev 自动裁剪到可见 bbox(+10 格): 0.4m 网格 80x80m 画进 600px 时
+  室内场景只占中心一小块, 裁剪后等效放大 (自车标记同步重映射)
 - 命令行导出 tools/export_ply.py (rgbd2occ export ...):
   points (LIDAR_TOP bin -> PLY 点云, 亮度标量场+灰度着色) /
   occ (labels.npz -> PLY 体素点云, 13 类语义着色, --what occupied|free|all) /

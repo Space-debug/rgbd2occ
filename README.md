@@ -47,6 +47,7 @@ rgbd2occ/
 ```bash
 rgbd2occ                                   # 全局帮助 + 已注册数据集/产物
 rgbd2occ list                              # 注册表 + config 路径
+rgbd2occ doctor                            # 环境/依赖体检: 各产物线可用后端
 rgbd2occ convert sunrgbd nuscenes          # 全量 -> nuScenes 格式 (断点续跑)
 rgbd2occ convert sunrgbd nuscenes --limit 3    # 每 split 前 3 帧试跑
 rgbd2occ convert sunrgbd nuscenes --frames 1,1925

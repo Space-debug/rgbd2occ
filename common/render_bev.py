@@ -30,8 +30,21 @@ def _ego_marker(draw, cx, cy, scale):
                   (cx + 7 * scale, cy + 2 * scale)], fill=(255, 0, 0))
 
 
+def _visible_bounds(vis, margin=10):
+    """可见掩膜 (H,W) -> 裁剪边界 (r0, r1, c0, c1); 全空返回 None。"""
+    rows = np.where(vis.any(1))[0]
+    cols = np.where(vis.any(0))[0]
+    if not len(rows):
+        return None
+    H, W = vis.shape
+    return (max(0, rows[0] - margin), min(H, rows[-1] + 1 + margin),
+            max(0, cols[0] - margin), min(W, cols[-1] + 1 + margin))
+
+
 def render_occ_bev(semantics, mask_camera, path, size=600, title=None):
-    """occ labels -> BEV PNG: 彩色=可见占据(沿 z 取最高类), 绿=可见 free, 深灰=未知。"""
+    """occ labels -> BEV PNG: 彩色=可见占据(沿 z 取最高类), 绿=可见 free, 深灰=未知。
+    自动裁剪到可见区域 bbox(+10 格边距): 0.4m 网格 80x80m 画进 600px 时
+    室内场景只占中间一小块, 裁剪后等效放大。"""
     occ = (semantics < 17) & (mask_camera == 1)
     free = (semantics == 17) & (mask_camera == 1)
     H, W = semantics.shape[:2]
@@ -44,9 +57,16 @@ def render_occ_bev(semantics, mask_camera, path, size=600, title=None):
     pal = np.array([[128, 128, 128]] + CLASS_COLORS, np.uint8)
     m2 = cls > 0
     rgb[m2] = pal[cls[m2]]
+    bounds = _visible_bounds((occ | free).any(2))
+    if bounds:
+        r0, r1, c0, c1 = bounds
+        rgb = rgb[r0:r1, c0:c1]
     img = Image.fromarray(rgb[::-1, ::-1]).resize((size, size), Image.NEAREST)
     d = ImageDraw.Draw(img)
-    _ego_marker(d, size // 2, size // 2, size / 400)
+    # 自车在网格中心: 裁剪后重映射到输出画布坐标 (越界时 PIL 自动剪掉)
+    ego_c = ((W // 2 - c0 if bounds else W // 2) + 0.5) * (size / (c1 - c0 if bounds else W))
+    ego_r = ((H // 2 - r0 if bounds else H // 2) + 0.5) * (size / (r1 - r0 if bounds else H))
+    _ego_marker(d, ego_c, ego_r, size / 400)
     if title:
         d.text((6, 4), title, fill=(255, 255, 0))
     img.save(path)
