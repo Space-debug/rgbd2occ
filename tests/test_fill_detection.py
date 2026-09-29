@@ -76,3 +76,11 @@ def test_proper_rotation_mirrored_and_degenerate():
     R2 = proper_rotation(D)
     assert np.linalg.det(R2) > 1 - 1e-9
     assert np.allclose(R2.T @ R2, np.eye(3), atol=1e-9)
+
+
+def test_proper_rotation_nan_basis():
+    """NaN basis (实测 1/64258) 退化为轴对齐, 不得让整批转换崩溃。"""
+    from datasets.sunrgbd.fill_detection import proper_rotation
+    B = np.array([[np.nan, 0, 0], [0, 1, 0], [0, 0, 1]])
+    R = proper_rotation(B)
+    assert np.allclose(R, np.eye(3))

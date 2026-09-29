@@ -98,7 +98,10 @@ def proper_rotation(B):
     (个别近奇异)。盒体所张平行六面体与列向量符号无关 —— 取反一列消镜像
     (盒体不变), 再极分解 (SVD) 投影到最近正交旋转。未经此处理直接
     rot_to_quat 会得到错误姿态 (曾致镜像基的 table 框朝向画歪)。"""
-    B = np.asarray(B, np.float64).copy()
+    B = np.asarray(B, np.float64)
+    if not np.isfinite(B).all():
+        return np.eye(3)        # 稀有: 标注含 NaN (实测 64258 框仅 1 例), 退化轴对齐
+    B = B.copy()
     if np.linalg.det(B) < 0:
         B[:, 0] = -B[:, 0]
     U, _, Vt = np.linalg.svd(B)
