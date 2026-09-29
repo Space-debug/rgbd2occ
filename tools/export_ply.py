@@ -11,6 +11,7 @@
   rgbd2occ export points D:/Datasets/sunrgbd_nuscenes_v3/samples/LIDAR_TOP/train --limit 5
   rgbd2occ export occ D:/Datasets/sunrgbd_nuscenes_v3/gts --limit 4 --what all
   rgbd2occ export boxes D:/Datasets/sunrgbd_nuscenes_v3 --split train --names img-000001
+  rgbd2occ export preview D:/Datasets/sunrgbd_nuscenes_v3 --names img-000001  (2D+3D框叠加图)
   rgbd2occ export info D:/Datasets/sunrgbd_nuscenes_v3
 本文件也可独立运行 (等价): python tools/export_ply.py points|occ|boxes|info ...
 输出默认写到当前目录新建的 rgbd2occ_export/ (--out 可改)。
@@ -288,6 +289,93 @@ def _rows(path):
     return json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
 
 
+# ---------------- preview: 2D/3D 标注叠加到相机图像 ----------------
+
+# 投影约定同 datasets/sunrgbd/fill_detection.box_proj_iou:
+# 自车系 -> 工具箱相机系 (x右,y前,z上); 图像 v 向下故 z 取负
+_M_ego2cam = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+
+
+def _project_corners(tr, Re, hf, K):
+    """3D 框 8 角点 (ego 系) -> 像素 (u,v); 任一角点在相机后方时返回 None。"""
+    cs = np.array([tr + Re @ np.array([dx, dy, dz]) * hf
+                   for dx in (-1, 1) for dy in (-1, 1) for dz in (-1, 1)])
+    pc = cs @ _M_ego2cam.T
+    fwd = pc[:, 1]
+    if (fwd <= 0.05).any():
+        return None
+    u = K[0][0] * pc[:, 0] / fwd + K[0][2]
+    v = -K[1][1] * pc[:, 2] / fwd + K[1][2]
+    return np.stack([u, v], 1)
+
+
+def mode_preview(args):
+    """相机图 + 2D gt 框(绿) + 3D 框投影(按类着色) -> PNG。数据全部来自
+    数据包内文件: detection_meta_cache.json(框/2D) + intrinsics_per_frame.json(K)
+    + samples/CAM_FRONT 原图 —— 不依赖原始 SUN RGB-D 数据集。"""
+    from PIL import Image, ImageDraw
+    root = args.src
+    cache_p = os.path.join(root, "detection_meta_cache.json")
+    intr_p = os.path.join(root, "intrinsics_per_frame.json")
+    if not (os.path.exists(cache_p) and os.path.exists(intr_p)):
+        sys.exit("缺 detection_meta_cache.json / intrinsics_per_frame.json;"
+                 " 先跑: rgbd2occ convert sunrgbd detection")
+    cache = json.load(open(cache_p, encoding="utf-8"))
+    intr = json.load(open(intr_p, encoding="utf-8"))
+    out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
+    os.makedirs(out_dir, exist_ok=True)
+
+    nums = sorted(int(k.split("/")[1]) for k in cache
+                  if k.startswith(args.split + "/"))
+    names = _split_names(args.names)
+    if names:
+        want = {_norm_frame(t) for t in names}
+        nums = [n for n in nums if ("img-%06d" % n) in want]
+    elif args.limit:
+        nums = nums[:args.limit]
+
+    n_draw = 0
+    for num in nums:
+        key = "%s/%06d" % (args.split, num)
+        rec, meta = cache[key], intr.get("%s/img-%06d" % (args.split, num))
+        jpg = os.path.join(root, "samples", "CAM_FRONT", args.split,
+                           "img-%06d.jpg" % num)
+        if meta is None or not os.path.exists(jpg):
+            print("跳过 (缺内参或图像):", key)
+            continue
+        img = Image.open(jpg).convert("RGB")
+        d = ImageDraw.Draw(img)
+        Rt = _M_ego2cam.T @ np.asarray(rec["Rtilt"], np.float64).T  # 重力系->ego
+        K = meta["K_native"]
+        n2 = n3 = 0
+        if not args.no_2d:
+            for b in rec["boxes"]:
+                if not b.get("bb2d"):
+                    continue
+                x, y, w, h = b["bb2d"]
+                d.rectangle([x, y, x + w, y + h], outline=(0, 220, 0), width=2)
+                d.text((x + 2, y + 2), b["cls"], fill=(0, 220, 0))
+                n2 += 1
+        if not args.no_3d:
+            for b in rec["boxes"]:
+                tr = Rt @ np.asarray(b["centroid"], np.float64)
+                Re = Rt @ np.asarray(b["basis"], np.float64)
+                uv = _project_corners(tr, Re, np.asarray(b["coeffs"], np.float64) / 2, K)
+                if uv is None:
+                    continue
+                col = _hash_color(b["cls"].lower())
+                for i, j in _EDGES:
+                    d.line([tuple(uv[i]), tuple(uv[j])], fill=col, width=2)
+                d.text((float(uv[:, 0].min()) + 2,
+                        max(0.0, float(uv[:, 1].min()) - 12)), b["cls"], fill=col)
+                n3 += 1
+        dst = os.path.join(out_dir, "preview_%s_img-%06d.png" % (args.split, num))
+        img.save(dst)
+        n_draw += 1
+        print("%s  2D框 %d, 3D框 %d" % (dst, n2, n3))
+    print("共 %d 帧 -> %s" % (n_draw, out_dir))
+
+
 def mode_info(args):
     root = args.src
     print("数据包:", os.path.abspath(root))
@@ -405,6 +493,17 @@ def add_subparsers(sub, with_registry=False):
     p = sub.add_parser("info", help="数据包概览统计")
     p.add_argument("src", help="数据包根目录")
     p.set_defaults(handler=mode_info)
+
+    p = sub.add_parser("preview",
+                       help="标注叠加可视化: 相机图 + 2D gt 框 + 3D 框投影 -> PNG")
+    p.add_argument("src", help="数据包根目录 (需已跑 convert sunrgbd detection)")
+    p.add_argument("--split", default="train", choices=["train", "val"])
+    p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
+    p.add_argument("--limit", type=int, default=0, help="前 N 帧")
+    p.add_argument("--out", default=None)
+    p.add_argument("--no-2d", action="store_true", help="不画 2D gt 框")
+    p.add_argument("--no-3d", action="store_true", help="不画 3D 框投影")
+    p.set_defaults(handler=mode_preview)
 
 
 def main(argv=None):

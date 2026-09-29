@@ -160,3 +160,32 @@ def test_convert_unknown_dataset_exits():
         assert False, "应退出"
     except SystemExit:
         pass
+
+
+def test_preview_renders_2d3d():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        from PIL import Image
+        os.makedirs(os.path.join(td, "samples", "CAM_FRONT", "train"))
+        Image.new("RGB", (200, 200), (128, 128, 128)).save(
+            os.path.join(td, "samples", "CAM_FRONT", "train", "img-000001.jpg"))
+        json.dump({"train/000001": {
+            "Rtilt": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "boxes": [{"cls": "chair", "centroid": [0.0, 5.0, 1.5],
+                       "coeffs": [1.0, 1.0, 1.0],
+                       "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                       "bb2d": [50, 50, 40, 40]}]}},
+            open(os.path.join(td, "detection_meta_cache.json"), "w"))
+        json.dump({"train/img-000001": {
+            "W": 200, "H": 200,
+            "K_native": [[50, 0, 100], [0, 50, 100], [0, 0, 1]],
+            "K_640": []}},
+            open(os.path.join(td, "intrinsics_per_frame.json"), "w"))
+        out = _run(["preview", td, "--split", "train",
+                    "--names", "img-000001", "--out", od])
+        png = os.path.join(od, "preview_train_img-000001.png")
+        assert os.path.exists(png) and os.path.getsize(png) > 0
+        assert "2D框 1, 3D框 1" in out
+
+        out2 = _run(["preview", td, "--split", "train", "--no-2d", "--no-3d",
+                     "--out", od])
+        assert "2D框 0, 3D框 0" in out2

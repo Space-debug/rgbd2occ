@@ -41,9 +41,9 @@ def build_parser():
     p = sub.add_parser("list", help="列出已注册数据集/产物与 config 路径")
     p.set_defaults(handler=export_ply.mode_list)
 
-    p = sub.add_parser("export", help="产物导出: CloudCompare PLY / 数据包信息")
+    p = sub.add_parser("export", help="产物导出: CloudCompare PLY / 标注可视化 / 数据包信息")
     exp_sub = p.add_subparsers(dest="export_cmd", required=True,
-                               metavar="{points,occ,boxes,info}")
+                               metavar="{points,occ,boxes,preview,info}")
     export_ply.add_subparsers(exp_sub, with_registry=False)
 
     p = sub.add_parser("convert", help="调用数据集转换入口 (参数原样透传)")
