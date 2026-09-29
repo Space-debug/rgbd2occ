@@ -22,6 +22,9 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- 按反馈删除 boxes 独立导出线 (框可视化保留在 export preview --with-3d);
+  occ 默认改小方格表示 (按语义类着色立方体网格, "有点的地方用小方格"),
+  散点降为 --style point 可选; 渲染铁证: 方格与点云表面逐面贴合
 - **修复 3D 框朝向真 bug**: SUN RGB-D 64258 框实测 15.6% basis 为镜像基
   (det<0)、约半数非严格正交、1 例 NaN —— 直接 rot_to_quat 产出错误姿态
   (img-000001 主 table 框与基准 R 差 1.69)。新增 fill_detection.proper_rotation:

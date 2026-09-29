@@ -117,31 +117,30 @@ def test_occ_export_legacy_default():
         os.makedirs(tok_dir)
         _synth_npz(os.path.join(tok_dir, "labels.npz"))
         out = _run(["occ", td, "--out", od])
-        po = os.path.join(od, "sunrgbd-train-kv1_00b1d48e_occupied.ply")
+        po = os.path.join(od, "sunrgbd-train-kv1_00b1d48e_occupied_cubes.ply")
         pf = os.path.join(od, "sunrgbd-train-kv1_00b1d48e_free.ply")
         assert os.path.exists(po) and os.path.exists(pf)
-        d = export_ply.read_ply(po)
-        # camera 掩膜: 3 个占据体素 (floor/wall/others); 不可见占据被剔除
-        assert len(d["x"]) == 3
+        d = export_ply.read_ply(po, with_faces=True)
+        # 小方格(立方体网格): 3 个可见占据体素 x (8 顶点+6 面)
+        assert len(d["x"]) == 3 * 8 and len(d["faces"]) == 3 * 6
         cols = {tuple(c) for c in zip(d["red"], d["green"], d["blue"])}
         assert tuple(CLASS_COLORS[5]) in cols           # floor
         assert tuple(CLASS_COLORS[12]) in cols          # wall
         assert (128, 128, 128) in cols                  # others 灰
         f = export_ply.read_ply(pf)
-        assert len(f["x"]) == 1                         # 1 个可见 free 体素 (1/8 不再抽)
-        assert list(f["red"]) == [245]                  # legacy: 白色
-        assert "体素" in out and "free" in out
+        assert len(f["x"]) == 1                         # 1 个可见 free 体素
+        assert list(f["red"]) == [245]                  # 白色
+        assert "立方体网格" in out and "free" in out
 
 
-def test_occ_cube_style_still_available():
+def test_occ_point_style_still_available():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         tok_dir = os.path.join(td, "sc", "tok")
         os.makedirs(tok_dir)
         _synth_npz(os.path.join(tok_dir, "labels.npz"))
-        _run(["occ", td, "--style", "cube", "--out", od])
-        d = export_ply.read_ply(os.path.join(od, "sc_tok_occupied_cubes.ply"),
-                                with_faces=True)
-        assert len(d["x"]) == 3 * 8 and len(d["faces"]) == 3 * 6
+        _run(["occ", td, "--style", "point", "--out", od])
+        d = export_ply.read_ply(os.path.join(od, "sc_tok_occupied.ply"))
+        assert len(d["x"]) == 3                         # 散点: 每体素 1 顶点
 
 
 def test_occ_free_mode_and_coords():
@@ -167,12 +166,15 @@ def test_occ_uses_npz_voxel_meta():
                             gmin=np.array([-100, -100, -2], np.float32))
         _run(["occ", os.path.join(td, "labels.npz"), "--out", od])
         (ply,) = [os.path.join(od, f) for f in os.listdir(od)
-                  if f.endswith("_occupied.ply")]
+                  if f.endswith("_occupied_cubes.ply")]
         d = export_ply.read_ply(ply)
-        assert len(d["x"]) == 3
-        # floor 体素 (100,100,2): (100.5,100.5,2.5)*1.0 + (-100,-100,-2) = (0.5, 0.5, 0.5)
-        got = sorted(zip(d["x"], d["y"], d["z"]))
-        assert any(np.allclose(g, (0.5, 0.5, 0.5), atol=1e-4) for g in got)
+        assert len(d["x"]) == 3 * 8                     # cube 默认: 每体素 8 顶点
+        # 3 个体素 (100,100,2)/(100,101,2)/(100,102,3), voxel=1, cube_scale=0.95:
+        # 中心±0.475 -> x [0.025,0.975] y [0.025,2.975] z [0.025,1.975]
+        for v, lo, hi in ((d["x"], 0.025, 0.975), (d["y"], 0.025, 2.975),
+                          (d["z"], 0.025, 1.975)):
+            assert np.isclose(v.min(), lo, atol=1e-4)
+            assert np.isclose(v.max(), hi, atol=1e-4)
 
 
 def test_convert_frame_writes_voxel_meta():
@@ -185,41 +187,6 @@ def test_convert_frame_writes_voxel_meta():
     assert np.allclose(res["gmin"], [-40, -40, -1])
 
 
-def test_boxes_export():
-    """boxes: 12 条边改为连续细管网格 (8 顶点+4 quad/边), 纯线框模式。"""
-    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
-        ver = os.path.join(td, "v1.0-fake")
-        os.makedirs(ver)
-        cat_t, inst_t, samp_t = "cat1", "inst1", "samp1"
-        json.dump([{"token": cat_t, "name": "chair.indoor", "description": ""}],
-                  open(os.path.join(ver, "category.json"), "w"))
-        json.dump([{"token": samp_t, "timestamp": 0, "prev": "", "next": "",
-                    "scene_token": None}],
-                  open(os.path.join(ver, "sample.json"), "w"))
-        json.dump([{"token": "sd1", "sample_token": samp_t, "ego_pose_token": "sd1",
-                    "calibrated_sensor_token": "cs1", "timestamp": 0,
-                    "fileformat": "jpg", "is_key_frame": True, "height": 530,
-                    "width": 730, "filename": "samples/CAM_FRONT/train/img-000001.jpg",
-                    "prev": "", "next": "", "sensor_modality": "camera"}],
-                  open(os.path.join(ver, "sample_data.json"), "w"))
-        json.dump([{"token": inst_t, "category_token": cat_t, "nbr_annotations": 1,
-                    "first_annotation_token": "a1", "last_annotation_token": "a1"}],
-                  open(os.path.join(ver, "instance.json"), "w"))
-        json.dump([{"token": "a1", "sample_token": samp_t, "instance_token": inst_t,
-                    "attribute_token": "", "translation": [1.0, 2.0, 0.5],
-                    "size": [0.8, 1.2, 0.9],
-                    "rotation": [1.0, 0.0, 0.0, 0.0],
-                    "prev": "", "next": "", "num_lidar_pts": 10, "num_radar_pts": 0}],
-                  open(os.path.join(ver, "sample_annotation.json"), "w"))
-        # 框不再依赖 bin (点云由 points 模式单独出), 纯线框管网格
-        out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
-        ply = os.path.join(od, "boxes_v1.0-fake_img-000001.ply")
-        assert os.path.exists(ply)
-        d = export_ply.read_ply(ply, with_faces=True)
-        # 12 边 x (8 顶点 + 4 quad) = 96 顶点 48 面; 单位四元数下长度沿 x
-        assert len(d["x"]) == 96 and len(d["faces"]) == 48
-        assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
-        assert "1 框" in out
 
 
 def test_demo_generates_full_set():
@@ -274,8 +241,8 @@ def test_demo_generates_full_set():
             open(os.path.join(root, "intrinsics_per_frame.json"), "w"))
 
         out = _run(["demo", root, "--names", "img-000001", "--out", od])
-        expect = ["points_train_img-000001.ply", "boxes_train_img-000001.ply",
-                  "occ_train_img-000001_fake-scene_samp1_occupied.ply",
+        expect = ["points_train_img-000001.ply",
+                  "occ_train_img-000001_fake-scene_samp1_occupied_cubes.ply",
                   "occ_train_img-000001_fake-scene_samp1_free.ply",
                   "preview_train_img-000001.png",
                   "bev_points_img-000001.png", "bev_occ_img-000001.png"]

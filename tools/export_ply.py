@@ -356,80 +356,6 @@ def _norm_frame(t):
     return ("img-%06d" % int(t)) if t.isdigit() else t
 
 
-def _edge_tube(A, B, r):
-    """边 (A,B) -> 细四棱管: 8 顶点 + 4 个 quad (局部索引), 连续线框用。"""
-    d = B - A
-    L = np.linalg.norm(d)
-    if L < 1e-9:
-        return A.reshape(1, 3), []
-    d = d / L
-    up = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-    u = np.cross(d, up)
-    u /= np.linalg.norm(u)
-    v = np.cross(d, u)
-    ring_u, ring_v = u * r, v * r
-    offs = [ring_u, ring_v, -ring_u, -ring_v]
-    verts = np.array([A + o for o in offs] + [B + o for o in offs])
-    faces = [[0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
-    return verts, faces
-
-
-def mode_boxes(args):
-    ver = args.src
-    if not os.path.basename(ver).startswith("v1.0-"):
-        ver = os.path.join(ver, "v1.0-sunrgbd-%s" % args.split)
-    rd = lambda n: json.load(open(os.path.join(ver, n), encoding="utf-8"))
-    anns = rd("sample_annotation.json")
-    inst = {i["token"]: i for i in rd("instance.json")}
-    cats = {c["token"]: c["name"].split(".")[-1] for c in rd("category.json")}
-    samples = {s["token"]: s for s in rd("sample.json")}
-    # sample_token -> 帧号 (CAM_FRONT sample_data 文件名反查)
-    tok2num = {}
-    for e in rd("sample_data.json"):
-        if "CAM_FRONT" in e.get("filename", ""):
-            tok2num[e["sample_token"]] = int(
-                e["filename"].split("img-")[1].split(".")[0])
-
-    names = _split_names(args.names)
-    if names:
-        want = {_norm_frame(t) for t in names}
-        sel = [a for a in anns
-               if ("img-%06d" % tok2num.get(a["sample_token"], -1)) in want]
-    else:
-        nums = sorted({tok2num[a["sample_token"]] for a in anns})
-        keep = set(nums[:args.limit] if args.limit else nums)
-        sel = [a for a in anns if tok2num.get(a["sample_token"]) in keep]
-    if not sel:
-        print("无匹配框 (ver=%s, names=%s)" % (ver, args.names))
-        return
-
-    out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
-    os.makedirs(out_dir, exist_ok=True)
-    by_frame = {}
-    for a in sel:
-        by_frame.setdefault(a["sample_token"], []).append(a)
-    for st, alist in sorted(by_frame.items(), key=lambda kv: tok2num.get(kv[0], 0)):
-        num = tok2num.get(st)
-        dst = os.path.join(out_dir, "boxes_%s_img-%06d.ply" % (
-            os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
-        xyz, rgb, faces, base = [], [], [], 0
-        for a in alist:
-            cname = cats.get(inst.get(a["instance_token"], {}).get("category_token", ""),
-                             "objects")
-            col = _hash_color(cname)
-            corners = _box_corners(a["translation"], a["rotation"], a["size"])
-            for i, j in _EDGES:
-                verts, tube = _edge_tube(corners[i], corners[j], args.radius)
-                xyz.append(verts)
-                rgb.append(np.tile(np.array(col, np.uint8), (len(verts), 1)))
-                faces.extend([[a0 + base, a1 + base, a2 + base, a3 + base]
-                              for a0, a1, a2, a3 in tube])
-            base += len(verts)
-        n = write_ply_mesh(dst, np.concatenate(xyz), np.concatenate(rgb), faces)
-        print("%s  %d 框, %d 顶点 %d 面 (与 points_*.ply 在 CC 中同载即叠加)" % (
-            dst, len(alist), n, len(faces)))
-
-
 def _rows(path):
     return json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
 
@@ -575,14 +501,11 @@ def mode_demo(args):
         mode_points(argparse.Namespace(
             src=bin_p, limit=0, names=[], out=out_dir, color="intensity",
             with_rgb=args.rgb, raw_root=args.raw_root))
-        mode_boxes(argparse.Namespace(
-            src=root, split=args.split, names=[name], limit=0,
-            radius=0.02, out=out_dir))
         if tok:
             mode_occ(argparse.Namespace(
                 src=os.path.join(root, "gts", scene, tok), limit=0, names=[],
                 out=out_dir, mask="camera", voxel=0.4, zmin=-1.0,
-                style="point", free_sub=8, cube_scale=0.95))
+                style="cube", free_sub=8, cube_scale=0.95))
         mode_preview(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0, out=out_dir,
             with_3d=False))
@@ -758,23 +681,12 @@ def add_subparsers(sub, with_registry=False):
                    help="Z 轴下界 (仅旧 npz 无元数据时生效)")
     p.add_argument("--free-sub", type=int, default=8,
                    help="free 体素抽稀倍数 (白色, 默认 1/8; legacy 表示)")
-    p.add_argument("--style", choices=["point", "cube"], default="point",
-                   help="point=体素中心语义色散点 (默认, legacy 验证过的表示), "
-                        "cube=占据体素立方体网格")
+    p.add_argument("--style", choices=["cube", "point"], default="cube",
+                   help="cube=按类着色小方格(立方体网格, 默认, 反馈要求的表示), "
+                        "point=体素中心语义色散点")
     p.add_argument("--cube-scale", type=float, default=0.95,
                    help="立方体边长缩放 (<1 露出格间缝, 默认 0.95)")
     p.set_defaults(handler=mode_occ)
-
-    p = sub.add_parser("boxes",
-                       help="3D 框 -> 连续线框管网格 (与 points_*.ply 在 CC 同载叠加)")
-    p.add_argument("src", help="数据包根目录或 v1.0-sunrgbd-<split> 目录")
-    p.add_argument("--split", default="train", choices=["train", "val"])
-    p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
-    p.add_argument("--limit", type=int, default=0, help="前 N 帧")
-    p.add_argument("--radius", type=float, default=0.02,
-                   help="线框管半径, 米 (默认 0.02)")
-    p.add_argument("--out", default=None)
-    p.set_defaults(handler=mode_boxes)
 
     p = sub.add_parser("info", help="数据包概览统计")
     p.add_argument("src", help="数据包根目录")
