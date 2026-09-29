@@ -35,6 +35,7 @@ from PIL import Image
 from common import (depth_to_points, load_depth, voxel_downsample,
                     write_nuscenes_bin)
 from common.get_logger import attach_file, get_logger
+from common.progress import progress_iter
 from common.run_qc import run_qc
 from common.render_bev import render_points_bev
 from common.write_manifest import write_manifest
@@ -328,7 +329,8 @@ def run_batch_gpu_nus(args, out, recs):
 
     decode_futs = [decode_pool.submit(decode_one_nus, r) for r in recs]
     batch = []
-    for k, fut in enumerate(decode_futs, 1):
+    for k, fut in enumerate(progress_iter(decode_futs, total=len(recs),
+                                          desc="nuscenes 解码"), 1):
         d = fut.result()
         if d["err"]:
             key = "%s/%s" % (d["task"]["split"], d["task"]["name"])
@@ -439,7 +441,9 @@ def main(argv=None):
         t0, stat = time.time(), {}
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
             for k, (key, st, err, cnt) in enumerate(
-                    ex.map(process_frame, [(r, out) for r in recs], chunksize=4), 1):
+                    progress_iter(ex.map(process_frame, [(r, out) for r in recs],
+                                         chunksize=4),
+                                  total=len(recs), desc="nuscenes 点云"), 1):
                 stat[st] = stat.get(st, 0) + 1
                 counts[key] = cnt
                 if st == "error":

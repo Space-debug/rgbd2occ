@@ -34,8 +34,11 @@ def run(_):
     print("== 加速项 (缺失只变慢, 不报错) ==")
     cv, ce = _mod("cv2")
     nv, ne = _mod("numba")
+    tv2, te2 = _mod("tqdm")
     print("  %-10s %-12s %s" % ("cv2", cv or "-", "OK" if cv else "缺失 (%s)" % ce))
     print("  %-10s %-12s %s" % ("numba", nv or "-", "OK" if nv else "缺失 (%s)" % ne))
+    print("  %-10s %-12s %s" % ("tqdm", tv2 or "-",
+                                "OK (批量进度条)" if tv2 else "缺失 (%s; 回退定期日志)" % te2))
 
     tv, te = _mod("torch")
     cuda = False

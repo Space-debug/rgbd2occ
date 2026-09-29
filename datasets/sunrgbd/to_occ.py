@@ -38,6 +38,7 @@ import numpy as np
 from occ import convert_frame, load_label, mask_depth, OccAnnotations, pose
 from common import load_depth, load_depth_raw
 from common.get_logger import attach_file, get_logger
+from common.progress import progress_iter
 from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
 from common.write_manifest import write_manifest
@@ -176,9 +177,12 @@ def run_batch(args):
     fails, counts, meds, t0, stat = {}, {}, {}, time.time(), {}
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         for k, (tok, st, err, cnt, med) in enumerate(
-                ex.map(partial(convert_one, out_root, img_src_root=img_src,
-                               ray_stride=args.ray_stride,
-                               label_vote=args.label_vote), tasks, chunksize=8), 1):
+                progress_iter(ex.map(partial(convert_one, out_root,
+                                             img_src_root=img_src,
+                                             ray_stride=args.ray_stride,
+                                             label_vote=args.label_vote),
+                                     tasks, chunksize=8),
+                              total=len(tasks), desc="occ 转换"), 1):
             stat[st] = stat.get(st, 0) + 1
             counts[tok] = cnt
             meds[tok] = med
@@ -314,7 +318,8 @@ def run_batch_gpu(args):
 
     decode_futs = [decode_pool.submit(decode_one, t) for t in tasks]
     batch = []
-    for k, fut in enumerate(decode_futs, 1):
+    for k, fut in enumerate(progress_iter(decode_futs, total=len(tasks),
+                                          desc="occ 解码"), 1):
         d = fut.result()
         tok = d["task"]["token"]
         if d["err"]:

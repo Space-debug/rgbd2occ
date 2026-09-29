@@ -25,6 +25,7 @@ import time
 import numpy as np
 
 from common.get_logger import attach_file, get_logger
+from common.progress import progress_iter
 from common.load_depth import load_depth
 from common.load_label import load_label
 from common.median_gradient import median_gradient
@@ -427,7 +428,8 @@ def main(argv=None):
 
         anns, insts, entries = [], [], {}
         n_bad = 0
-        for key in sorted(k for k in frames if k.startswith(sp + "/")):
+        for key in progress_iter(sorted(k for k in frames if k.startswith(sp + "/")),
+                                 total=len(frames), desc="检测填充"):
             rec = frames[key]
             K, WH = fn2K.get(key, (None, None))
             a, i, ious = process(sp, key, rec, fn2sample, cats, out,
