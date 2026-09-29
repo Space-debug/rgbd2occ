@@ -398,33 +398,26 @@ def mode_boxes(args):
     by_frame = {}
     for a in sel:
         by_frame.setdefault(a["sample_token"], []).append(a)
+    cand = os.path.dirname(ver)
+    root = cand if os.path.isdir(os.path.join(cand, "samples")) else ver
     for st, alist in sorted(by_frame.items(), key=lambda kv: tok2num.get(kv[0], 0)):
         num = tok2num.get(st)
-        suffix = "boxes_points" if args.with_points else "boxes"
-        dst = os.path.join(out_dir, "%s_%s_img-%06d.ply" % (
-            suffix, os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
-        if args.with_points:
-            cand = os.path.dirname(ver)
-            root = cand if os.path.isdir(os.path.join(cand, "samples")) else ver
-            bin_p = os.path.join(root, "samples", "LIDAR_TOP", args.split,
-                                 "img-%06d.pcd.bin" % num)
-            if os.path.exists(bin_p):
-                pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
-                inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
-                p_xyz, p_rgb = pts[:, :3], np.repeat(inten[:, None], 3, 1)
-                if getattr(args, "rgb", False) and getattr(args, "raw_root", None):
-                    got = _regen_rgb(bin_p, args.raw_root)
-                    if got is not None:
-                        p_xyz, p_rgb = got
-                xyz, rgb = [p_xyz], [p_rgb]
-            else:
-                print("跳过并入点云 (无 bin):", bin_p)
-                xyz = [np.zeros((0, 3), np.float32)]
-                rgb = [np.zeros((0, 3), np.uint8)]
-        else:
-            xyz = [np.zeros((0, 3), np.float32)]
-            rgb = [np.zeros((0, 3), np.uint8)]
-        faces, base = [], len(xyz[0]) if xyz and len(xyz[0]) else 0
+        dst = os.path.join(out_dir, "boxes_points_%s_img-%06d.ply" % (
+            os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
+        bin_p = os.path.join(root, "samples", "LIDAR_TOP", args.split,
+                             "img-%06d.pcd.bin" % num)
+        if not os.path.exists(bin_p):
+            print("跳过 (无 bin, 框必须并入点云):", bin_p)
+            continue
+        pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
+        inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
+        p_xyz, p_rgb = pts[:, :3], np.repeat(inten[:, None], 3, 1)
+        if getattr(args, "rgb", False) and getattr(args, "raw_root", None):
+            got = _regen_rgb(bin_p, args.raw_root)
+            if got is not None:
+                p_xyz, p_rgb = got
+        xyz, rgb = [p_xyz], [p_rgb]
+        faces, base = [], len(xyz[0])
         n_pts = base
         for a in alist:
             cname = cats.get(inst.get(a["instance_token"], {}).get("category_token", ""),
@@ -439,8 +432,8 @@ def mode_boxes(args):
                               for a0, a1, a2, a3 in tube])
             base += len(verts)
         n = write_ply_mesh(dst, np.concatenate(xyz), np.concatenate(rgb), faces)
-        print("%s  %d 框 (%s), %d 顶点 %d 面" % (
-            dst, len(alist), "含原始点云 %d 点" % n_pts if n_pts else "纯线框", n, len(faces)))
+        print("%s  %d 框 (含原始点云 %d 点), %d 顶点 %d 面" % (
+            dst, len(alist), n_pts, n, len(faces)))
 
 
 def _rows(path):
@@ -568,9 +561,12 @@ def mode_demo(args):
             print("跳过 (无 bin):", bin_p)
             continue
         tok, scene = _token_of(root, args.split, name)
+        mode_points(argparse.Namespace(
+            src=bin_p, limit=0, names=[], out=out_dir, color="intensity",
+            with_rgb=args.rgb, raw_root=args.raw_root))
         mode_boxes(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0,
-            with_points=True, radius=0.015, rgb=args.rgb,
+            radius=0.015, rgb=args.rgb,
             raw_root=args.raw_root, out=out_dir))
         if tok:
             mode_occ(argparse.Namespace(
@@ -759,13 +755,11 @@ def add_subparsers(sub, with_registry=False):
     p.set_defaults(handler=mode_occ)
 
     p = sub.add_parser("boxes",
-                       help="3D 框 -> 连续线框网格 PLY (--with-points 并入原始点云)")
+                       help="3D 框 -> 连续线框网格并入原始点云, 单文件输出")
     p.add_argument("src", help="数据包根目录或 v1.0-sunrgbd-<split> 目录")
     p.add_argument("--split", default="train", choices=["train", "val"])
     p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
     p.add_argument("--limit", type=int, default=0, help="前 N 帧")
-    p.add_argument("--with-points", action="store_true",
-                   help="把原始点云 (亮度灰度) 一并写进同一 PLY")
     p.add_argument("--radius", type=float, default=0.015,
                    help="线框管半径, 米 (默认 0.015)")
     p.add_argument("--rgb", action="store_true",

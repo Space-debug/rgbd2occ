@@ -199,53 +199,22 @@ def test_boxes_export():
                     "rotation": [1.0, 0.0, 0.0, 0.0],
                     "prev": "", "next": "", "num_lidar_pts": 10, "num_radar_pts": 0}],
                   open(os.path.join(ver, "sample_annotation.json"), "w"))
+        # 无 bin: 整帧跳过 (框必须并入点云, 不再产出纯线框文件)
         out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
-        ply = os.path.join(od, "boxes_v1.0-fake_img-000001.ply")
-        assert os.path.exists(ply)
-        d = export_ply.read_ply(ply, with_faces=True)
-        # 12 边 x (8 顶点 + 4 quad) = 96 顶点 48 面; 单位四元数下长度沿 x
-        assert len(d["x"]) == 96 and len(d["faces"]) == 48
-        assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
-        assert len({tuple(c) for c in zip(d["red"], d["green"], d["blue"])}) == 1
-        assert "1 框" in out
-
-
-def test_boxes_with_points_merged():
-    """--with-points: 原始点云与线框网格同文件 (顶点 = 点数 + 96)。"""
-    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
-        root = td
-        os.makedirs(os.path.join(root, "samples", "LIDAR_TOP", "train"))
+        assert not os.listdir(od) and "无 bin" in out
+        # 有 bin: 顶点 = 2 点 + 12 边 x 8 = 98, 面 48
+        os.makedirs(os.path.join(ver, "samples", "LIDAR_TOP", "train"))
         pts = np.array([[1, 0, 0, 0.5, 0], [2, 1, 1, 0.25, 0]], np.float32)
-        pts.tofile(os.path.join(root, "samples", "LIDAR_TOP", "train",
+        pts.tofile(os.path.join(ver, "samples", "LIDAR_TOP", "train",
                                 "img-000001.pcd.bin"))
-        ver = os.path.join(root, "v1.0-fake")
-        os.makedirs(ver)
-        json.dump([{"token": "cat1", "name": "chair.indoor", "description": ""}],
-                  open(os.path.join(ver, "category.json"), "w"))
-        json.dump([{"token": "samp1", "timestamp": 0, "prev": "", "next": "",
-                    "scene_token": None}],
-                  open(os.path.join(ver, "sample.json"), "w"))
-        json.dump([{"token": "sd1", "sample_token": "samp1", "ego_pose_token": "sd1",
-                    "calibrated_sensor_token": "cs1", "timestamp": 0,
-                    "fileformat": "jpg", "is_key_frame": True, "height": 1,
-                    "width": 1, "filename": "samples/CAM_FRONT/train/img-000001.jpg",
-                    "prev": "", "next": "", "sensor_modality": "camera"}],
-                  open(os.path.join(ver, "sample_data.json"), "w"))
-        json.dump([{"token": "inst1", "category_token": "cat1", "nbr_annotations": 1,
-                    "first_annotation_token": "a1", "last_annotation_token": "a1"}],
-                  open(os.path.join(ver, "instance.json"), "w"))
-        json.dump([{"token": "a1", "sample_token": "samp1", "instance_token": "inst1",
-                    "attribute_token": "", "translation": [1.0, 2.0, 0.5],
-                    "size": [0.8, 1.2, 0.9], "rotation": [1.0, 0.0, 0.0, 0.0],
-                    "prev": "", "next": "", "num_lidar_pts": 2, "num_radar_pts": 0}],
-                  open(os.path.join(ver, "sample_annotation.json"), "w"))
-        _run(["boxes", ver, "--names", "img-000001", "--with-points", "--out", od])
+        out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
         ply = os.path.join(od, "boxes_points_v1.0-fake_img-000001.ply")
         assert os.path.exists(ply)
         d = export_ply.read_ply(ply, with_faces=True)
         assert len(d["x"]) == 2 + 96 and len(d["faces"]) == 48
-        # 点 (1,0,0) 在文件最前; 灰度着色 127 对应 intensity 0.5
+        assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
         assert np.allclose(d["x"][0], 1.0) and d["red"][0] == 127
+        assert "含原始点云 2 点" in out
 
 
 def test_demo_generates_full_set():

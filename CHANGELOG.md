@@ -22,6 +22,8 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- boxes 再修正 (反馈): 删除"纯线框"独立导出路径 —— 框必须并入原始点云,
+  单文件输出 boxes_points_*; demo 同帧产出 纯点云 PLY + 点云加框 PLY 两件
 - boxes 线框重构 (反馈修正): 12 条边由离散采样点改为连续细四棱管网格
   (PLY face, CloudCompare 直渲, --radius 定粗细), --with-points 把原始点云
   (可选 --rgb 真彩) 与线框并入同一 PLY —— 框不再悬空、不再虚点
