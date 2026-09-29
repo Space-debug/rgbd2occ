@@ -7,6 +7,7 @@ to_nuscenes.py / to_occ.py 两条转换线), 然后在此登记一行。
 """
 from . import sunrgbd
 from .sunrgbd import fill_detection
+from .sunrgbd import export_2d
 from .sunrgbd import run_all_lines
 
 # {数据集: {产物: (模块, 入口函数)}}
@@ -15,6 +16,7 @@ DATASETS = {
         "nuscenes": ("datasets.sunrgbd.to_nuscenes", "main"),
         "occ": ("datasets.sunrgbd.to_occ", "main"),
         "detection": ("datasets.sunrgbd.fill_detection", "main"),
+        "2d": ("datasets.sunrgbd.export_2d", "main"),
         "all": ("datasets.sunrgbd.run_all_lines", "main"),
     },
 }
