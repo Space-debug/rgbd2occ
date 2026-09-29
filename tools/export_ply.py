@@ -242,9 +242,16 @@ def mode_occ(args):
         with np.load(npz_p) as d:
             sem = d["semantics"]
             mask = (d.get("mask_camera") if args.mask == "camera" else d.get("mask_lidar"))
-            mask = np.ones_like(sem) if mask is None else mask
+            mask = np.ones_like(sem, np.uint8) if mask is None else mask
+            # 体素元数据 (0.9.6 起 npz 自带); 旧 npz 无键时按约定假设
+            if "voxel" in d and "gmin" in d:
+                voxel = float(d["voxel"])
+                gmin = np.asarray(d["gmin"], np.float64)
+            else:
+                voxel = args.voxel
+                H0, W0 = sem.shape[:2]
+                gmin = np.array([-W0 * voxel / 2, -H0 * voxel / 2, args.zmin])
         H, W, D = sem.shape
-        gmin = np.array([-W * args.voxel / 2, -H * args.voxel / 2, args.zmin])
         sel = np.zeros(sem.shape, bool)
         if args.what in ("occupied", "all"):
             sel |= (sem < 17) & (mask > 0)
@@ -254,7 +261,7 @@ def mode_occ(args):
             print("跳过空占据", npz_p)
             continue
         idx = np.argwhere(sel)
-        xyz = (idx + 0.5) * args.voxel + gmin
+        xyz = (idx + 0.5) * voxel + gmin
         cls = sem[sel]
         # 调色板: 0..13 语义, 14=free (语义 17 归并到 free 行)
         pal = np.array(SEM_COLORS + [FREE_COLOR], np.uint8)
@@ -544,8 +551,10 @@ def add_subparsers(sub, with_registry=False):
                    help="occupied=占据体素(默认), free=可见空体素")
     p.add_argument("--mask", choices=["camera", "lidar"], default="camera",
                    help="可见性掩膜 (默认 camera)")
-    p.add_argument("--voxel", type=float, default=0.4, help="体素边长 (默认 0.4)")
-    p.add_argument("--zmin", type=float, default=-1.0, help="Z 轴下界 (默认 -1)")
+    p.add_argument("--voxel", type=float, default=0.4,
+                   help="体素边长 (仅旧 npz 无元数据时生效, 0.9.6+ npz 自带)")
+    p.add_argument("--zmin", type=float, default=-1.0,
+                   help="Z 轴下界 (仅旧 npz 无元数据时生效)")
     p.set_defaults(handler=mode_occ)
 
     p = sub.add_parser("boxes", help="sample_annotation 3D 框 -> PLY 彩色线框")

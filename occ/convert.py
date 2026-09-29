@@ -42,7 +42,8 @@ def convert_frame(depth, fx, fy, cx, cy, label=None, voxel=0.4,
             mask_camera = (free | occupied).astype(np.uint8)
             return dict(semantics=semantics,
                         mask_lidar=mask_camera,
-                        mask_camera=mask_camera)
+                        mask_camera=mask_camera,
+                        voxel=np.float32(voxel), gmin=gmin.astype(np.float32))
         except Exception:
             pass  # GPU 失败回退 CPU 精确路径
 
@@ -96,4 +97,5 @@ def convert_frame(depth, fx, fy, cx, cy, label=None, voxel=0.4,
     mask_camera = free | occupied
     return dict(semantics=semantics,
                 mask_lidar=mask_camera.astype(np.uint8),
-                mask_camera=mask_camera.astype(np.uint8))
+                mask_camera=mask_camera.astype(np.uint8),
+                voxel=np.float32(voxel), gmin=gmin.astype(np.float32))

@@ -33,7 +33,7 @@ def _synth_npz(path):
     sem[7, 7, 1] = 4                           # 占据但不可见 -> 默认掩膜下应被剔除
     mc[100, 100, 2] = mc[100, 101, 2] = mc[100, 102, 3] = mc[42, 42, 2] = 1
     np.savez_compressed(path, semantics=sem, mask_lidar=mc, mask_camera=mc)
-    return sem
+    return sem, mc
 
 
 def test_ply_roundtrip():
@@ -135,6 +135,33 @@ def test_occ_free_mode_and_coords():
         assert len(d["x"]) == 1                       # 唯一可见 free 体素
         # 体素中心: idx(42,42,2) -> (42.5,42.5,2.5)*0.4 + (-40,-40,-1) = (-23,-23,0)
         assert np.allclose([d["x"][0], d["y"][0], d["z"][0]], [-23.0, -23.0, 0.0], atol=1e-4)
+
+
+def test_occ_uses_npz_voxel_meta():
+    """npz 自带 voxel/gmin (0.9.6+) 时优先于 --voxel/--zmin 假设。"""
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        sem, mc = _synth_npz(os.path.join(td, "labels.npz"))
+        np.savez_compressed(os.path.join(td, "labels.npz"), semantics=sem,
+                            mask_lidar=mc, mask_camera=mc,
+                            voxel=np.float32(1.0),
+                            gmin=np.array([-100, -100, -2], np.float32))
+        _run(["occ", os.path.join(td, "labels.npz"), "--what", "occupied", "--out", od])
+        (ply,) = [os.path.join(od, f) for f in os.listdir(od) if f.endswith(".ply")]
+        d = export_ply.read_ply(ply)
+        assert len(d["x"]) == 3
+        # floor 体素 (100,100,2): (100.5,100.5,2.5)*1.0 + (-100,-100,-2) = (0.5, 0.5, 0.5)
+        got = sorted(zip(d["x"], d["y"], d["z"]))
+        assert any(np.allclose(g, (0.5, 0.5, 0.5), atol=1e-4) for g in got)
+
+
+def test_convert_frame_writes_voxel_meta():
+    """convert_frame 返回 dict 自带 voxel/gmin (写入 labels.npz 的元数据来源)。"""
+    from occ import convert_frame
+    dep = np.zeros((8, 8), np.float64)
+    dep[4, 4] = 2.0
+    res = convert_frame(dep, 50.0, 50.0, 4.0, 4.0)
+    assert abs(float(res["voxel"]) - 0.4) < 1e-6      # float32 存储有舍入
+    assert np.allclose(res["gmin"], [-40, -40, -1])
 
 
 def test_boxes_export():
