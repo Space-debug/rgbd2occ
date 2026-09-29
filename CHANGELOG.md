@@ -20,6 +20,8 @@
   export occ 优先读取, 旧 npz 无键回退 --voxel/--zmin 假设
 - 批量进度条 common/progress.progress_iter: tqdm 可用显示进度条, 缺失回退
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
+- occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
+  (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
 - boxes 线框重构 (反馈修正): 12 条边由离散采样点改为连续细四棱管网格
   (PLY face, CloudCompare 直渲, --radius 定粗细), --with-points 把原始点云
   (可选 --rgb 真彩) 与线框并入同一 PLY —— 框不再悬空、不再虚点

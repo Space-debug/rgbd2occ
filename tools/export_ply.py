@@ -308,9 +308,15 @@ def mode_occ(args):
         tok = os.path.basename(os.path.dirname(npz_p))            # token 目录名
         scene = os.path.basename(os.path.dirname(os.path.dirname(npz_p)))
         dst = os.path.join(out_dir, "%s_%s.ply" % (scene or "occ", tok))
-        n = write_ply(dst, xyz, rgb)
-        total += n
-        print("%s  %d 体素" % (dst, n))
+        if args.style == "cube":
+            verts, vcols, faces = _voxel_cubes(xyz, rgb, voxel * args.cube_scale)
+            n = write_ply_mesh(dst, verts, vcols, faces)
+            print("%s  %d 体素 (立方体网格, %d 顶点 %d 面)" % (dst, len(xyz), n, len(faces)))
+            total += len(xyz)
+        else:
+            n = write_ply(dst, xyz, rgb)
+            total += n
+            print("%s  %d 体素" % (dst, n))
     print("共 %d 文件 %d 体素 -> %s" % (len(npzs), total, out_dir))
 
 
@@ -570,7 +576,8 @@ def mode_demo(args):
             mode_occ(argparse.Namespace(
                 src=os.path.join(root, "gts", scene, tok), limit=0, names=[],
                 out=out_dir, what="all" if args.what_all else "occupied",
-                mask="camera", voxel=0.4, zmin=-1.0))
+                mask="camera", voxel=0.4, zmin=-1.0, style="cube",
+                cube_scale=0.95))
         mode_preview(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0, out=out_dir,
             no_2d=False, no_3d=False))
@@ -619,6 +626,21 @@ def mode_diff(args):
     for k in sorted(kb - ka)[:args.max_show]:
         print("  + 仅B: %s" % k)
     sys.exit(1 if (changed or ka != kb) else 0)
+
+
+def _voxel_cubes(xyz, rgb, size):
+    """体素中心+颜色 -> 立方体网格 (每体素 8 顶点 + 6 quad), Occup3D 风格。"""
+    h = size / 2.0
+    offs = np.array([[sx, sy, sz] for sx in (-h, h) for sy in (-h, h)
+                     for sz in (-h, h)], np.float64)
+    verts = (xyz[:, None, :] + offs[None, :, :]).reshape(-1, 3)
+    vcols = np.repeat(rgb, 8, axis=0)
+    quads = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1),
+             (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+    faces = []
+    for b in range(0, len(verts), 8):
+        faces.extend([[a0 + b, a1 + b, a2 + b, a3 + b] for a0, a1, a2, a3 in quads])
+    return verts, vcols, faces
 
 
 def mode_info(args):
@@ -730,6 +752,10 @@ def add_subparsers(sub, with_registry=False):
                    help="体素边长 (仅旧 npz 无元数据时生效, 0.9.6+ npz 自带)")
     p.add_argument("--zmin", type=float, default=-1.0,
                    help="Z 轴下界 (仅旧 npz 无元数据时生效)")
+    p.add_argument("--style", choices=["cube", "point"], default="cube",
+                   help="cube=按类着色小立方体网格 (默认, Occup3D 风格), point=散点")
+    p.add_argument("--cube-scale", type=float, default=0.95,
+                   help="立方体边长缩放 (<1 露出格间缝, 默认 0.95)")
     p.set_defaults(handler=mode_occ)
 
     p = sub.add_parser("boxes",

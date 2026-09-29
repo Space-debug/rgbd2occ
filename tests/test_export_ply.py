@@ -105,6 +105,7 @@ def test_points_with_rgb():
 
 
 def test_occ_export_occupied_default():
+    """默认 cube 风格: 每体素 8 顶点 + 6 quad, 颜色按类。"""
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         tok_dir = os.path.join(td, "sunrgbd-train-kv1", "00b1d48e")
         os.makedirs(tok_dir)
@@ -112,24 +113,31 @@ def test_occ_export_occupied_default():
         out = _run(["occ", td, "--out", od])
         ply = os.path.join(od, "sunrgbd-train-kv1_00b1d48e.ply")
         assert os.path.exists(ply)
-        d = export_ply.read_ply(ply)
+        d = export_ply.read_ply(ply, with_faces=True)
         # 默认 occupied + camera 掩膜: 3 个占据体素 (floor/wall/others), free 与不可见剔除
-        assert len(d["x"]) == 3
-        pal = np.array([[(128, 128, 128)], [tuple(CLASS_COLORS[5])],
-                        [tuple(CLASS_COLORS[12])]], np.uint8)
-        got = np.stack([d["red"], d["green"], d["blue"]], 1)
-        # floor 体素 (100,100) -> CLASS_COLORS[5], wall (100,101) -> CLASS_COLORS[12]
-        assert any(np.array_equal(g, pal[1][0]) for g in got)
-        assert any(np.array_equal(g, pal[2][0]) for g in got)
-        assert any(np.array_equal(g, pal[0][0]) for g in got)   # others 灰
+        assert len(d["x"]) == 3 * 8 and len(d["faces"]) == 3 * 6
+        cols = {tuple(c) for c in zip(d["red"], d["green"], d["blue"])}
+        assert tuple(CLASS_COLORS[5]) in cols           # floor
+        assert tuple(CLASS_COLORS[12]) in cols          # wall
+        assert (128, 128, 128) in cols                  # others 灰
         assert "体素" in out
+
+
+def test_occ_point_style_still_available():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        tok_dir = os.path.join(td, "sc", "tok")
+        os.makedirs(tok_dir)
+        _synth_npz(os.path.join(tok_dir, "labels.npz"))
+        _run(["occ", td, "--style", "point", "--out", od])
+        d = export_ply.read_ply(os.path.join(od, "sc_tok.ply"))
+        assert len(d["x"]) == 3                         # 纯散点: 每体素 1 顶点
 
 
 def test_occ_free_mode_and_coords():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         npz = os.path.join(td, "labels.npz")
         _synth_npz(npz)
-        _run(["occ", npz, "--what", "free", "--out", od])
+        _run(["occ", npz, "--what", "free", "--style", "point", "--out", od])
         (ply,) = [os.path.join(od, f) for f in os.listdir(od) if f.endswith(".ply")]
         d = export_ply.read_ply(ply)
         assert len(d["x"]) == 1                       # 唯一可见 free 体素
@@ -145,7 +153,8 @@ def test_occ_uses_npz_voxel_meta():
                             mask_lidar=mc, mask_camera=mc,
                             voxel=np.float32(1.0),
                             gmin=np.array([-100, -100, -2], np.float32))
-        _run(["occ", os.path.join(td, "labels.npz"), "--what", "occupied", "--out", od])
+        _run(["occ", os.path.join(td, "labels.npz"), "--what", "occupied",
+              "--style", "point", "--out", od])
         (ply,) = [os.path.join(od, f) for f in os.listdir(od) if f.endswith(".ply")]
         d = export_ply.read_ply(ply)
         assert len(d["x"]) == 3
