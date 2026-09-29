@@ -61,21 +61,60 @@ def write_ply(path, xyz, rgb, intensity=None):
     return n
 
 
-def read_ply(path):
-    """读回本工具写出的 PLY (测试/校验用): 返回 {属性名: (N,) 数组} dict。"""
-    props, n = [], 0
+def write_ply_mesh(path, xyz, rgb, faces):
+    """顶点+面 PLY (quad/triangle 混合): CloudCompare 直接渲染为带色网格。
+    faces: 顶点索引列表的列表 (长度 3 或 4)。"""
+    n, m = len(xyz), len(faces)
+    hdr = ["ply", "format binary_little_endian 1.0", "element vertex %d" % n,
+           "property float x", "property float y", "property float z",
+           "property uchar red", "property uchar green", "property uchar blue",
+           "element face %d" % m, "property list uchar int vertex_indices",
+           "end_header"]
+    arr = np.zeros(n, dtype=[("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+                             ("red", "u1"), ("green", "u1"), ("blue", "u1")])
+    arr["x"], arr["y"], arr["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    arr["red"], arr["green"], arr["blue"] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    with open(path, "wb") as f:
+        f.write(("\n".join(hdr) + "\n").encode("ascii"))
+        arr.tofile(f)
+        for face in faces:
+            f.write(bytes([len(face)]))
+            f.write(np.asarray(face, "<i4").tobytes())
+    return n
+
+
+def read_ply(path, with_faces=False):
+    """读回本工具写出的 PLY (测试/校验用)。
+    返回 {属性名: 数组}; with_faces=True 时附带 "faces" (list[int] 列表)。"""
+    props, faces, n = [], [], 0
+    elem = None
     with open(path, "rb") as f:
         while True:
             line = f.readline().decode("ascii").strip()
-            if line.startswith("element vertex"):
+            if line.startswith("element"):
+                elem = line.split()[1]
+                if elem != "vertex":
+                    continue
+            if elem == "vertex" and line.startswith("element vertex"):
                 n = int(line.split()[-1])
-            elif line.startswith("property"):
+            elif elem == "vertex" and line.startswith("property"):
                 props.append(line.split()[1:])          # [类型, 名]
             elif line == "end_header":
                 break
         dt = np.dtype([(name, {"float": "<f4", "uchar": "u1"}[t]) for t, name in props])
         arr = np.frombuffer(f.read(dt.itemsize * n), dt)
-    return {name: arr[name].copy() for _, name in props}
+        if with_faces:
+            raw = f.read()
+    out = {name: arr[name].copy() for _, name in props}
+    if with_faces:
+        pos = 0
+        while pos < len(raw):
+            k = raw[pos]
+            pos += 1
+            faces.append(list(np.frombuffer(raw, "<i4", k, pos)))
+            pos += 4 * k
+        out["faces"] = faces
+    return out
 
 
 def _hash_color(name):
@@ -301,6 +340,24 @@ def _norm_frame(t):
     return ("img-%06d" % int(t)) if t.isdigit() else t
 
 
+def _edge_tube(A, B, r):
+    """边 (A,B) -> 细四棱管: 8 顶点 + 4 个 quad (局部索引), 连续线框用。"""
+    d = B - A
+    L = np.linalg.norm(d)
+    if L < 1e-9:
+        return A.reshape(1, 3), []
+    d = d / L
+    up = np.array([0.0, 0.0, 1.0]) if abs(d[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    u = np.cross(d, up)
+    u /= np.linalg.norm(u)
+    v = np.cross(d, u)
+    ring_u, ring_v = u * r, v * r
+    offs = [ring_u, ring_v, -ring_u, -ring_v]
+    verts = np.array([A + o for o in offs] + [B + o for o in offs])
+    faces = [[0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
+    return verts, faces
+
+
 def mode_boxes(args):
     ver = args.src
     if not os.path.basename(ver).startswith("v1.0-"):
@@ -337,22 +394,47 @@ def mode_boxes(args):
         by_frame.setdefault(a["sample_token"], []).append(a)
     for st, alist in sorted(by_frame.items(), key=lambda kv: tok2num.get(kv[0], 0)):
         num = tok2num.get(st)
-        pts_all, rgb_all = [], []
+        suffix = "boxes_points" if args.with_points else "boxes"
+        dst = os.path.join(out_dir, "%s_%s_img-%06d.ply" % (
+            suffix, os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
+        if args.with_points:
+            cand = os.path.dirname(ver)
+            root = cand if os.path.isdir(os.path.join(cand, "samples")) else ver
+            bin_p = os.path.join(root, "samples", "LIDAR_TOP", args.split,
+                                 "img-%06d.pcd.bin" % num)
+            if os.path.exists(bin_p):
+                pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
+                inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
+                p_xyz, p_rgb = pts[:, :3], np.repeat(inten[:, None], 3, 1)
+                if getattr(args, "rgb", False) and getattr(args, "raw_root", None):
+                    got = _regen_rgb(bin_p, args.raw_root)
+                    if got is not None:
+                        p_xyz, p_rgb = got
+                xyz, rgb = [p_xyz], [p_rgb]
+            else:
+                print("跳过并入点云 (无 bin):", bin_p)
+                xyz = [np.zeros((0, 3), np.float32)]
+                rgb = [np.zeros((0, 3), np.uint8)]
+        else:
+            xyz = [np.zeros((0, 3), np.float32)]
+            rgb = [np.zeros((0, 3), np.uint8)]
+        faces, base = [], len(xyz[0]) if xyz and len(xyz[0]) else 0
+        n_pts = base
         for a in alist:
             cname = cats.get(inst.get(a["instance_token"], {}).get("category_token", ""),
                              "objects")
             col = _hash_color(cname)
             corners = _box_corners(a["translation"], a["rotation"], a["size"])
             for i, j in _EDGES:
-                seg = corners[j] - corners[i]
-                k = max(2, int(np.linalg.norm(seg) / args.step) + 1)
-                t = np.linspace(0, 1, k)[:, None]
-                pts_all.append(corners[i] + seg * t)
-                rgb_all.append(np.tile(np.array(col, np.uint8), (k, 1)))
-        dst = os.path.join(out_dir, "boxes_%s_img-%06d.ply" % (
-            os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
-        n = write_ply(dst, np.concatenate(pts_all), np.concatenate(rgb_all))
-        print("%s  %d 框 %d 线框点" % (dst, len(alist), n))
+                verts, tube = _edge_tube(corners[i], corners[j], args.radius)
+                xyz.append(verts)
+                rgb.append(np.tile(np.array(col, np.uint8), (len(verts), 1)))
+                faces.extend([[a0 + base, a1 + base, a2 + base, a3 + base]
+                              for a0, a1, a2, a3 in tube])
+            base += len(verts)
+        n = write_ply_mesh(dst, np.concatenate(xyz), np.concatenate(rgb), faces)
+        print("%s  %d 框 (%s), %d 顶点 %d 面" % (
+            dst, len(alist), "含原始点云 %d 点" % n_pts if n_pts else "纯线框", n, len(faces)))
 
 
 def _rows(path):
@@ -480,17 +562,15 @@ def mode_demo(args):
             print("跳过 (无 bin):", bin_p)
             continue
         tok, scene = _token_of(root, args.split, name)
-        mode_points(argparse.Namespace(
-            src=bin_p, limit=0, names=[], out=out_dir, color="intensity",
-            with_rgb=args.rgb, raw_root=args.raw_root))
+        mode_boxes(argparse.Namespace(
+            src=root, split=args.split, names=[name], limit=0,
+            with_points=True, radius=0.015, rgb=args.rgb,
+            raw_root=args.raw_root, out=out_dir))
         if tok:
             mode_occ(argparse.Namespace(
                 src=os.path.join(root, "gts", scene, tok), limit=0, names=[],
                 out=out_dir, what="all" if args.what_all else "occupied",
                 mask="camera", voxel=0.4, zmin=-1.0))
-        mode_boxes(argparse.Namespace(
-            src=root, split=args.split, names=[name], limit=0, step=0.05,
-            out=out_dir))
         mode_preview(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0, out=out_dir,
             no_2d=False, no_3d=False))
@@ -652,12 +732,19 @@ def add_subparsers(sub, with_registry=False):
                    help="Z 轴下界 (仅旧 npz 无元数据时生效)")
     p.set_defaults(handler=mode_occ)
 
-    p = sub.add_parser("boxes", help="sample_annotation 3D 框 -> PLY 彩色线框")
+    p = sub.add_parser("boxes",
+                       help="3D 框 -> 连续线框网格 PLY (--with-points 并入原始点云)")
     p.add_argument("src", help="数据包根目录或 v1.0-sunrgbd-<split> 目录")
     p.add_argument("--split", default="train", choices=["train", "val"])
     p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
     p.add_argument("--limit", type=int, default=0, help="前 N 帧")
-    p.add_argument("--step", type=float, default=0.05, help="线框采样步长(米)")
+    p.add_argument("--with-points", action="store_true",
+                   help="把原始点云 (亮度灰度) 一并写进同一 PLY")
+    p.add_argument("--radius", type=float, default=0.015,
+                   help="线框管半径, 米 (默认 0.015)")
+    p.add_argument("--rgb", action="store_true",
+                   help="并入的点云着真彩色 (需 --raw-root 原始数据)")
+    p.add_argument("--raw-root", default=None)
     p.add_argument("--out", default=None)
     p.set_defaults(handler=mode_boxes)
 

@@ -71,7 +71,7 @@ rgbd2occ export points <out>/samples/LIDAR_TOP/train --with-rgb  # 重投影着�
 rgbd2occ export points <out>/samples/LIDAR_TOP/train/img-000123.pcd.bin
 rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>
 rgbd2occ export occ    <out>/gts --limit 4 --what all     # 含 free 空体素
-rgbd2occ export boxes  <out> --split train --names img-000001,img-000002
+rgbd2occ export boxes  <out> --split train --names img-000001 --with-points  # 线框并入点云
 rgbd2occ export preview <out> --names img-000001   # 原图 + 2D gt 框 + 3D 框投影
 rgbd2occ export demo   <out> --names img-000001    # 一键全套可视化 (PLY+PNG×4)
 rgbd2occ export diff   <旧manifest.json> <新manifest.json>   # 回归对比 (一致0/有差异1)

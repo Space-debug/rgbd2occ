@@ -20,6 +20,9 @@
   export occ 优先读取, 旧 npz 无键回退 --voxel/--zmin 假设
 - 批量进度条 common/progress.progress_iter: tqdm 可用显示进度条, 缺失回退
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
+- boxes 线框重构 (反馈修正): 12 条边由离散采样点改为连续细四棱管网格
+  (PLY face, CloudCompare 直渲, --radius 定粗细), --with-points 把原始点云
+  (可选 --rgb 真彩) 与线框并入同一 PLY —— 框不再悬空、不再虚点
 - export demo: 单帧一键全套可视化 (点云/occ/3D框 PLY + 叠加 PNG + 双 BEV)
 - export diff: 两份 manifest 逐帧对比 (md5 缺失回退 count+bytes;
   退出码一致 0/有差异 1), 升级转换器/换后端后的回归验证

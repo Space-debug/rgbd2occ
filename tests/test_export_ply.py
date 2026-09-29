@@ -165,6 +165,7 @@ def test_convert_frame_writes_voxel_meta():
 
 
 def test_boxes_export():
+    """boxes: 12 条边改为连续细管网格 (8 顶点+4 quad/边), 纯线框模式。"""
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         ver = os.path.join(td, "v1.0-fake")
         os.makedirs(ver)
@@ -192,11 +193,50 @@ def test_boxes_export():
         out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
         ply = os.path.join(od, "boxes_v1.0-fake_img-000001.ply")
         assert os.path.exists(ply)
-        d = export_ply.read_ply(ply)
-        # 12 条棱 x>=2 点; 单位四元数下角点 = tr ± (l/2, w/2, h/2)
-        assert len(d["x"]) >= 24
+        d = export_ply.read_ply(ply, with_faces=True)
+        # 12 边 x (8 顶点 + 4 quad) = 96 顶点 48 面; 单位四元数下长度沿 x
+        assert len(d["x"]) == 96 and len(d["faces"]) == 48
         assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
-        assert "chair" in out or "1 框" in out
+        assert len({tuple(c) for c in zip(d["red"], d["green"], d["blue"])}) == 1
+        assert "1 框" in out
+
+
+def test_boxes_with_points_merged():
+    """--with-points: 原始点云与线框网格同文件 (顶点 = 点数 + 96)。"""
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        root = td
+        os.makedirs(os.path.join(root, "samples", "LIDAR_TOP", "train"))
+        pts = np.array([[1, 0, 0, 0.5, 0], [2, 1, 1, 0.25, 0]], np.float32)
+        pts.tofile(os.path.join(root, "samples", "LIDAR_TOP", "train",
+                                "img-000001.pcd.bin"))
+        ver = os.path.join(root, "v1.0-fake")
+        os.makedirs(ver)
+        json.dump([{"token": "cat1", "name": "chair.indoor", "description": ""}],
+                  open(os.path.join(ver, "category.json"), "w"))
+        json.dump([{"token": "samp1", "timestamp": 0, "prev": "", "next": "",
+                    "scene_token": None}],
+                  open(os.path.join(ver, "sample.json"), "w"))
+        json.dump([{"token": "sd1", "sample_token": "samp1", "ego_pose_token": "sd1",
+                    "calibrated_sensor_token": "cs1", "timestamp": 0,
+                    "fileformat": "jpg", "is_key_frame": True, "height": 1,
+                    "width": 1, "filename": "samples/CAM_FRONT/train/img-000001.jpg",
+                    "prev": "", "next": "", "sensor_modality": "camera"}],
+                  open(os.path.join(ver, "sample_data.json"), "w"))
+        json.dump([{"token": "inst1", "category_token": "cat1", "nbr_annotations": 1,
+                    "first_annotation_token": "a1", "last_annotation_token": "a1"}],
+                  open(os.path.join(ver, "instance.json"), "w"))
+        json.dump([{"token": "a1", "sample_token": "samp1", "instance_token": "inst1",
+                    "attribute_token": "", "translation": [1.0, 2.0, 0.5],
+                    "size": [0.8, 1.2, 0.9], "rotation": [1.0, 0.0, 0.0, 0.0],
+                    "prev": "", "next": "", "num_lidar_pts": 2, "num_radar_pts": 0}],
+                  open(os.path.join(ver, "sample_annotation.json"), "w"))
+        _run(["boxes", ver, "--names", "img-000001", "--with-points", "--out", od])
+        ply = os.path.join(od, "boxes_points_v1.0-fake_img-000001.ply")
+        assert os.path.exists(ply)
+        d = export_ply.read_ply(ply, with_faces=True)
+        assert len(d["x"]) == 2 + 96 and len(d["faces"]) == 48
+        # 点 (1,0,0) 在文件最前; 灰度着色 127 对应 intensity 0.5
+        assert np.allclose(d["x"][0], 1.0) and d["red"][0] == 127
 
 
 def test_demo_generates_full_set():
@@ -251,8 +291,8 @@ def test_demo_generates_full_set():
             open(os.path.join(root, "intrinsics_per_frame.json"), "w"))
 
         out = _run(["demo", root, "--names", "img-000001", "--out", od])
-        expect = ["img-000001.ply", "fake-scene_samp1.ply",
-                  "boxes_train_img-000001.ply", "preview_train_img-000001.png",
+        expect = ["boxes_points_train_img-000001.ply", "fake-scene_samp1.ply",
+                  "preview_train_img-000001.png",
                   "bev_points_img-000001.png", "bev_occ_img-000001.png"]
         for f in expect:
             assert os.path.exists(os.path.join(od, f)), f
