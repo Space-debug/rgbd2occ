@@ -91,6 +91,23 @@ def rot_to_quat(R):
                      (R[1, 2] + R[2, 1]) / s, 0.25 * s])
 
 
+def proper_rotation(B):
+    """groundtruth3DBB basis -> 最近纯旋转矩阵。
+
+    实测 SUN RGB-D 64258 框: 15.6% basis 为镜像基 (det<0), 约半数非严格正交
+    (个别近奇异)。盒体所张平行六面体与列向量符号无关 —— 取反一列消镜像
+    (盒体不变), 再极分解 (SVD) 投影到最近正交旋转。未经此处理直接
+    rot_to_quat 会得到错误姿态 (曾致镜像基的 table 框朝向画歪)。"""
+    B = np.asarray(B, np.float64).copy()
+    if np.linalg.det(B) < 0:
+        B[:, 0] = -B[:, 0]
+    U, _, Vt = np.linalg.svd(B)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        R = U @ np.diag([1.0, 1.0, -1.0]) @ Vt
+    return R
+
+
 def box_proj_iou(tr, Re, hf, K, bb2d, W, H):
     """3D 框角点投影到像素 vs gtBb2D [x y w h] 的 IoU。
     tr/Re 为自车系; 自车系 -> 工具箱相机系 (x右,y前,z上) 只需轴变换 M。"""
@@ -221,7 +238,7 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=
     _trs, _Res, _halves = [], [], []
     for b in rec["boxes"]:
         _trs.append(Rt @ np.asarray(b["centroid"], np.float64))
-        _Re = Rt @ np.asarray(b["basis"], np.float64)
+        _Re = Rt @ proper_rotation(b["basis"])   # 消镜像/正交化后再入表
         _Res.append(_Re)
         _halves.append(np.asarray(b["coeffs"], np.float64) / 2 + 0.05)
     npts_list = [0] * len(rec["boxes"])
@@ -236,10 +253,9 @@ def process(split, frame_key, rec, samples_idx, cats, out, count_points=True, K=
     for j, b in enumerate(rec["boxes"]):
         name13 = CLASS_MAP.get(b["cls"].lower(), "objects")
         ctr = np.asarray(b["centroid"], np.float64)
-        B = np.asarray(b["basis"], np.float64)
         cf = np.asarray(b["coeffs"], np.float64)
         tr = Rt @ ctr
-        Re = Rt @ B
+        Re = Rt @ proper_rotation(b["basis"])     # 与计数/点统计同一净化路径
         quat = rot_to_quat(Re).tolist()
         size = [float(cf[1]), float(cf[0]), float(cf[2])]   # nuScenes wlh: 长(basis1)宽(basis0)高(basis2)
         npts = int(npts_list[j]) if pts is not None else 0
@@ -330,7 +346,7 @@ def label_consistency_qc(out, frames, splits, raw_root, sample_every, depth_scal
                 continue
             cc = CLASSES_13.index(name13) + 1
             tr = Rt @ np.asarray(b["centroid"], np.float64)
-            Re = Rt @ np.asarray(b["basis"], np.float64)
+            Re = Rt @ proper_rotation(b["basis"])
             hf = np.asarray(b["coeffs"], np.float64) / 2 + 0.1
             inside = np.all(np.abs((P - tr) @ Re) <= hf, 1)
             if inside.sum() < 5:
@@ -410,7 +426,7 @@ def main(argv=None):
                 pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)[:, :3].astype(np.float64)
                 Rt = M.T @ np.asarray(rec["Rtilt"], np.float64).T
                 trs = [Rt @ np.asarray(b["centroid"], np.float64) for b in rec["boxes"]]
-                Res = [Rt @ np.asarray(b["basis"], np.float64) for b in rec["boxes"]]
+                Res = [Rt @ proper_rotation(b["basis"]) for b in rec["boxes"]]
                 halves = [np.asarray(b["coeffs"], np.float64) / 2 + 0.05
                           for b in rec["boxes"]]
                 if _gpu_ok():

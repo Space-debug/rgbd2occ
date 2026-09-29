@@ -46,3 +46,33 @@ def test_ego_toolbox_gravity_roundtrip():
     p_grav = Rtilt @ (M @ p)
     p_back = M.T @ Rtilt.T @ p_grav
     assert np.allclose(p_back, p, atol=1e-12)
+
+
+def test_proper_rotation_mirrored_and_degenerate():
+    """SUN RGB-D 实测 15.6% 框为镜像基 (det<0), 约半数非严格正交 ——
+    proper_rotation 必须给出纯旋转, 且镜像情形盒体张成不变。"""
+    from datasets.sunrgbd.fill_detection import proper_rotation
+
+    # 1) 镜像基: 取反一列后应得 det=+1 正交旋转; 盒体 (列张成) 不变
+    Rz = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1.0]])
+    B = Rz.copy()
+    B[:, 1] *= -1                                   # det=-1
+    assert np.linalg.det(B) < 0
+    R = proper_rotation(B)
+    assert np.linalg.det(R) > 1 - 1e-9
+    assert np.allclose(R.T @ R, np.eye(3), atol=1e-9)
+    # 盒体不变性: 对每对 ±e_i 系数, 原基与净化基张成的平行六面体同集合
+    for c in (np.array([1., 1, 1]), np.array([1., 2, .5])):
+        pts = [B @ (c * t) for t in
+               [(a, b, d) for a in (-.5, .5) for b in (-.5, .5) for d in (-.5, .5)]]
+        pts2 = [R @ (c * t) for t in
+                [(a, b, d) for a in (-.5, .5) for b in (-.5, .5) for d in (-.5, .5)]]
+        hull1 = np.abs(np.array(pts)).max(0)
+        hull2 = np.abs(np.array(pts2)).max(0)
+        assert np.allclose(np.sort(hull1), np.sort(hull2), atol=1e-9)
+
+    # 2) 非正交/近奇异基 (实测 clothing_rack det=0.02): 仍得纯旋转, 不抛异常
+    D = Rz @ np.diag([1.0, 1.0, 0.02])
+    R2 = proper_rotation(D)
+    assert np.linalg.det(R2) > 1 - 1e-9
+    assert np.allclose(R2.T @ R2, np.eye(3), atol=1e-9)
