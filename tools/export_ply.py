@@ -279,21 +279,51 @@ def mode_occ(args):
     os.makedirs(out_dir, exist_ok=True)
     npzs = _collect_npz(args.src, args.limit, _split_names(args.names))
     total = 0
+    revox = float(getattr(args, "revox", 0.05) or 0)
+    if revox > 0 and not getattr(args, "raw_root", None):
+        try:
+            from config import dataset_paths
+            args.raw_root = dataset_paths("sunrgbd")["raw_root"]
+        except Exception:
+            pass
     for npz_p in npzs:
-        with np.load(npz_p) as d:
-            sem = d["semantics"]
-            mask = (d.get("mask_camera") if args.mask == "camera" else d.get("mask_lidar"))
-            mask = np.ones_like(sem, np.uint8) if mask is None else mask
-            # 体素元数据 (0.9.6 起 npz 自带); 旧 npz 无键时按约定假设
-            if "voxel" in d and "gmin" in d:
-                voxel = float(d["voxel"])
-                gmin = np.asarray(d["gmin"], np.float64)
-            else:
-                voxel = args.voxel
-                H0, W0 = sem.shape[:2]
-                gmin = np.array([-W0 * voxel / 2, -H0 * voxel / 2, args.zmin])
-        # legacy 表示 (_legacy/export_occ_pointcloud.py): 体素中心散点 ——
-        # 占据=语义色, free=白 (1/8 抽稀), 未知不导出 (淹没画面)
+        sem = mask = voxel = gmin = None
+        note = ""
+        if revox > 0:
+            tok0 = (os.path.basename(os.path.dirname(npz_p))
+                    if os.path.basename(npz_p) == "labels.npz"
+                    else os.path.splitext(os.path.basename(npz_p))[0])
+            fr0 = _frame_of_token(npz_p, tok0)
+            if fr0 and getattr(args, "raw_root", None):
+                pkg_root = os.path.dirname(os.path.abspath(npz_p))
+                for _ in range(5):
+                    pkg_root = os.path.dirname(pkg_root)
+                    if os.path.exists(os.path.join(pkg_root,
+                                                   "intrinsics_per_frame.json")):
+                        break
+                res = _revox_frame(pkg_root, fr0[0], fr0[1], args.raw_root, revox)
+                if res is not None:
+                    sem, mask = res["semantics"], res["mask_camera"]
+                    voxel = float(res["voxel"])
+                    gmin = np.asarray(res["gmin"], np.float64)
+                    note = ", revox %.3gm legacy 细方格" % revox
+                else:
+                    print("revox 不可用 (缺原始深度/内参), 回退数据集体素")
+        if sem is None:
+            with np.load(npz_p) as d:
+                sem = d["semantics"]
+                mask = (d.get("mask_camera") if args.mask == "camera"
+                        else d.get("mask_lidar"))
+                mask = np.ones_like(sem, np.uint8) if mask is None else mask
+                # 体素元数据 (0.9.6 起 npz 自带); 旧 npz 无键时按约定假设
+                if "voxel" in d and "gmin" in d:
+                    voxel = float(d["voxel"])
+                    gmin = np.asarray(d["gmin"], np.float64)
+                else:
+                    voxel = args.voxel
+                    H0, W0 = sem.shape[:2]
+                    gmin = np.array([-W0 * voxel / 2, -H0 * voxel / 2, args.zmin])
+        # legacy 表示: 占据=语义色小方格/散点, free=白 (1/8 抽稀), 未知不导出
         occ = (sem < 17) & (mask > 0)          # 0=others(灰) 也算占据
         free = (sem == 17) & (mask > 0)
         if not occ.any():
@@ -315,7 +345,7 @@ def mode_occ(args):
             verts, vcols, faces = _voxel_cubes(poc, rgb, voxel * args.cube_scale)
             dst = os.path.join(out_dir, stem + "_occupied_cubes.ply")
             write_ply_mesh(dst, verts, vcols, faces)
-            print("%s  %d 体素 (立方体网格)" % (dst, len(poc)))
+            print("%s  %d 体素 (立方体网格%s)" % (dst, len(poc), note))
         else:
             dst = os.path.join(out_dir, stem + "_occupied.ply")
             write_ply(dst, poc, rgb)
@@ -482,6 +512,35 @@ def _frame_of_token(npz_p, token):
     return None
 
 
+def _revox_frame(pkg_root, split, img_name, raw_root, voxel):
+    """从原始深度+标签重投影细体素 (legacy compare_occ_points.py 同款, 默认 0.05m):
+    仅用于可视化 (数据集仍为官方 0.4m schema); 缺内参/原始深度返回 None。"""
+    from common.load_depth import load_depth
+    from common.load_label import load_label
+    from datasets.sunrgbd.labels import label_path
+    from occ import convert_frame, mask_depth
+    intr_p = os.path.join(pkg_root, "intrinsics_per_frame.json")
+    if not os.path.exists(intr_p):
+        return None
+    meta = json.load(open(intr_p, encoding="utf-8")).get("%s/%s" % (split, img_name))
+    if meta is None:
+        return None
+    num = int(img_name.split("-")[1])
+    dep_dir = "sunrgbd_train_depth" if split == "train" else "sunrgbd_test_depth"
+    dep_p = os.path.join(raw_root, dep_dir, "%d.png" % num)
+    if not os.path.exists(dep_p):
+        return None
+    lab = None
+    lab_p = label_path(raw_root, split, num)
+    if lab_p:
+        lab = load_label(lab_p)
+    K = meta["K_native"]
+    dep = mask_depth(load_depth(dep_p, 1.0 / 6553.5), (0.3, 8.0))
+    return convert_frame(dep, K[0][0], K[1][1], K[0][2], K[1][2], label=lab,
+                         voxel=voxel, x_range=(0.2, 8.0), y_range=(-4.0, 4.0),
+                         z_range=(-2.0, 3.0), ray_stride=2)
+
+
 def mode_demo(args):
     """一键样例可视化: 单帧产出 点云 PLY / occ PLY / 3D 框 PLY / 标注叠加 PNG /
     点云+occ BEV PNG —— 手工跑一整套导出命令的等价快捷方式。"""
@@ -505,7 +564,9 @@ def mode_demo(args):
             mode_occ(argparse.Namespace(
                 src=os.path.join(root, "gts", scene, tok), limit=0, names=[],
                 out=out_dir, mask="camera", voxel=0.4, zmin=-1.0,
-                style="cube", free_sub=8, cube_scale=0.95))
+                style="cube", free_sub=8, cube_scale=0.95,
+                revox=getattr(args, "revox", 0.05),
+                raw_root=args.raw_root))
         mode_preview(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0, out=out_dir,
             with_3d=False))
@@ -679,6 +740,11 @@ def add_subparsers(sub, with_registry=False):
                    help="体素边长 (仅旧 npz 无元数据时生效, 0.9.6+ npz 自带)")
     p.add_argument("--zmin", type=float, default=-1.0,
                    help="Z 轴下界 (仅旧 npz 无元数据时生效)")
+    p.add_argument("--revox", type=float, default=0.05,
+                   help="细体素重投影边长, 米 (默认 0.05=legacy 同款; 0=用数据集"
+                        " 0.4m 体素), 需 config/--raw-root 原始数据")
+    p.add_argument("--raw-root", default=None,
+                   help="SUN RGB-D 原始数据根 (默认取 config 的 raw_root)")
     p.add_argument("--free-sub", type=int, default=8,
                    help="free 体素抽稀倍数 (白色, 默认 1/8; legacy 表示)")
     p.add_argument("--style", choices=["cube", "point"], default="cube",
@@ -712,6 +778,8 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--rgb", action="store_true",
                    help="点云 PLY 着真彩色 (需 --raw-root 原始数据)")
     p.add_argument("--raw-root", default=None)
+    p.add_argument("--revox", type=float, default=0.05,
+                   help="occ 细方格重投影边长 (默认 0.05; 0=数据集 0.4m)")
     p.set_defaults(handler=mode_demo)
 
     p = sub.add_parser("diff", help="对比两份 manifest 逐帧差异 (换后端/升级转换器后回归)")

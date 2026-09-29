@@ -177,6 +177,26 @@ def test_occ_uses_npz_voxel_meta():
             assert np.isclose(v.max(), hi, atol=1e-4)
 
 
+def test_revox_frame_fine_voxels():
+    """_revox_frame: 从原始深度按 0.05m 细体素重投影 (legacy 同款默认)。"""
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as pkg, tempfile.TemporaryDirectory() as raw:
+        json.dump({"train/img-000001": {
+            "W": 20, "H": 20,
+            "K_native": [[50.0, 0, 10.0], [0, 50.0, 10.0], [0, 0, 1]], "K_640": []}},
+            open(os.path.join(pkg, "intrinsics_per_frame.json"), "w"))
+        os.makedirs(os.path.join(raw, "sunrgbd_train_depth"))
+        Image.fromarray(np.full((20, 20), int(3 * 6553.5), np.uint16)).save(
+            os.path.join(raw, "sunrgbd_train_depth", "1.png"))
+        res = export_ply._revox_frame(pkg, "train", "img-000001", raw, 0.05)
+        assert res is not None
+        occ = (res["semantics"] < 17) & (res["mask_camera"] > 0)
+        assert occ.sum() > 100                       # 3m 墙面: 数百细体素
+        assert abs(float(res["voxel"]) - 0.05) < 1e-6
+        # 缺深度时优雅返回 None
+        assert export_ply._revox_frame(pkg, "train", "img-000009", raw, 0.05) is None
+
+
 def test_convert_frame_writes_voxel_meta():
     """convert_frame 返回 dict 自带 voxel/gmin (写入 labels.npz 的元数据来源)。"""
     from occ import convert_frame
@@ -240,7 +260,8 @@ def test_demo_generates_full_set():
             "K_native": [[50, 0, 100], [0, 50, 100], [0, 0, 1]], "K_640": []}},
             open(os.path.join(root, "intrinsics_per_frame.json"), "w"))
 
-        out = _run(["demo", root, "--names", "img-000001", "--out", od])
+        out = _run(["demo", root, "--names", "img-000001", "--revox", "0",
+                    "--out", od])
         expect = ["points_train_img-000001.ply",
                   "occ_train_img-000001_fake-scene_samp1_occupied_cubes.ply",
                   "occ_train_img-000001_fake-scene_samp1_free.ply",

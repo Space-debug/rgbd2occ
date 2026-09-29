@@ -67,7 +67,7 @@ rgbd2occ sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
 ```bash
 rgbd2occ export info   <out>                              # 数据包概览
 rgbd2occ export points <out>/samples/LIDAR_TOP/train --limit 5 --with-rgb  # RGB点云
-rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>  # 小方格+free 两件
+rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>  # 0.05m 细方格+free
 rgbd2occ export occ    <out>/gts --limit 4 --style point   # 散点可选
 rgbd2occ export preview <out> --names img-000001   # 原图 + 2D gt 框 (--with-3d 加投影)
 rgbd2occ export demo   <out> --names img-000001    # 一键全套可视化
@@ -77,8 +77,9 @@ python tools/read_devkit_example.py <out>   # nuScenes devkit 读取示例 (无 
 ```
 
 - 产物导出为**二进制 PLY**（零第三方依赖），CloudCompare 直接拖入即可：
-  points=纯 RGB 点云（--with-rgb 重投影真彩）; occ=占据小方格（按语义类着色的
-  立方体网格, 默认）+ free 白色 1/8 抽稀散点, 各一文件、文件名含帧号; 3D 框
+  points=纯 RGB 点云（--with-rgb 重投影真彩）; occ=占据小方格（默认 0.05m 细体素
+  重投影, legacy 同款; --revox 0 用数据集 0.4m 体素）+ free 白色 1/8 抽稀,
+  文件名含帧号; 3D 框
   可视化用 `export preview --with-3d`（投影到原图）。坐标系=自车系 X前/Y左/Z上，
   与 CloudCompare 默认 Z 轴向上一致；输出默认当前目录 `rgbd2occ_export/`。
 - `pip install .` 后以上均以 `rgbd2occ` 命令调起（未安装时 `python main.py ...` 等价）。

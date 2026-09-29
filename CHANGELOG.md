@@ -22,6 +22,10 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- occ 方格默认 0.05m 细体素重投影 (反馈: 0.4m 方格太大; _legacy/
+  compare_occ_points.py 实证 VOX=0.05): export occ --revox 0.05 默认从原始
+  深度+标签重投影出细方格 (数据集仍为官方 0.4m schema, 仅为可视化),
+  原始数据不可用自动回退数据集体素; 实测 487 -> 24837 方格, 渲染贴合表面
 - 按反馈删除 boxes 独立导出线 (框可视化保留在 export preview --with-3d);
   occ 默认改小方格表示 (按语义类着色立方体网格, "有点的地方用小方格"),
   散点降为 --style point 可选; 渲染铁证: 方格与点云表面逐面贴合
