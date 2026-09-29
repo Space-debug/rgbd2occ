@@ -36,13 +36,12 @@ from functools import partial
 import numpy as np
 
 from occ import convert_frame, load_label, mask_depth, OccAnnotations, pose
-from common import load_depth_raw
+from common import load_depth, load_depth_raw
 from common.get_logger import attach_file, get_logger
 from common.render_bev import render_occ_bev
 from common.run_qc import run_qc
 from common.write_manifest import write_manifest
 from common.backends import data_variant, get_backend
-from common import load_depth_raw
 from config import dataset_paths
 from .labels import label_path, semantic_classes_doc
 
