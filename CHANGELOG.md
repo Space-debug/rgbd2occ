@@ -22,6 +22,11 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- 生成命令支持 --voxel (反馈): `sunrgbd all` 编排原先不透传; to_occ CPU 批量
+  convert_one 原先硬编码 0.4 已贯通; 细体素护栏 (voxel<0.1 且默认范围 -> 自动
+  切室内局部范围 x[0.2,8] y[-4,4] z[-2,3], 超 5 亿格/帧拒绝); manifest 记录
+  真实 voxel/ranges; run_qc 适配自描述 npz (voxel/gmin 键与非官方维度不误报)。
+  实测 --voxel 0.05: (156,160,100) 网格, QC 0 错误
 - occ 方格默认 0.05m 细体素重投影 (反馈: 0.4m 方格太大; _legacy/
   compare_occ_points.py 实证 VOX=0.05): export occ --revox 0.05 默认从原始
   深度+标签重投影出细方格 (数据集仍为官方 0.4m schema, 仅为可视化),

@@ -57,6 +57,7 @@ rgbd2occ convert sunrgbd 2d                # 2D gt 框 -> annotations2d.json 侧
 rgbd2occ sunrgbd occ --help                # 产物层参数 (透传给转换入口)
 rgbd2occ sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
     --cx 365 --cy 265 --depth-scale 0.000152592 --scene s1 --token t1 --out-root out
+rgbd2occ sunrgbd all --voxel 0.05   # 细体素数据集 (自动切室内局部范围, 偏离官方 schema)
 ```
 
 `sunrgbd nuscenes` 首次运行解析 SUNRGBDMeta.mat 后缓存到
