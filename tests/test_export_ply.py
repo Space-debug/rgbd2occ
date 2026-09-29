@@ -199,6 +199,66 @@ def test_boxes_export():
         assert "chair" in out or "1 框" in out
 
 
+def test_demo_generates_full_set():
+    """demo: 单帧一键产出 点云/occ/框 PLY + 叠加 PNG + 两张 BEV。"""
+    from PIL import Image
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        root = td
+        os.makedirs(os.path.join(root, "samples", "LIDAR_TOP", "train"))
+        os.makedirs(os.path.join(root, "samples", "CAM_FRONT", "train"))
+        os.makedirs(os.path.join(root, "gts", "fake-scene", "samp1"))
+        pts = np.array([[1, 0, 0, 0.5, 0], [2, 1, 1, 0.25, 0]], np.float32)
+        pts.tofile(os.path.join(root, "samples", "LIDAR_TOP", "train",
+                                "img-000001.pcd.bin"))
+        Image.new("RGB", (200, 200), (90, 90, 90)).save(
+            os.path.join(root, "samples", "CAM_FRONT", "train", "img-000001.jpg"))
+        _synth_npz(os.path.join(root, "gts", "fake-scene", "samp1", "labels.npz"))
+        ver = os.path.join(root, "v1.0-sunrgbd-train")
+        os.makedirs(ver)
+        json.dump([{"token": "cat1", "name": "chair.indoor", "description": ""}],
+                  open(os.path.join(ver, "category.json"), "w"))
+        json.dump([{"token": "samp1", "timestamp": 0, "prev": "", "next": "",
+                    "scene_token": "sc1"}],
+                  open(os.path.join(ver, "sample.json"), "w"))
+        json.dump([{"token": "sc1", "log_token": "l1", "nbr_samples": 1,
+                    "first_sample_token": "samp1", "last_sample_token": "samp1",
+                    "name": "fake-scene", "description": ""}],
+                  open(os.path.join(ver, "scene.json"), "w"))
+        json.dump([{"token": "sd1", "sample_token": "samp1", "ego_pose_token": "sd1",
+                    "calibrated_sensor_token": "cs1", "timestamp": 0,
+                    "fileformat": "jpg", "is_key_frame": True, "height": 200,
+                    "width": 200,
+                    "filename": "samples/CAM_FRONT/train/img-000001.jpg",
+                    "prev": "", "next": "", "sensor_modality": "camera"}],
+                  open(os.path.join(ver, "sample_data.json"), "w"))
+        json.dump([{"token": "inst1", "category_token": "cat1", "nbr_annotations": 1,
+                    "first_annotation_token": "a1", "last_annotation_token": "a1"}],
+                  open(os.path.join(ver, "instance.json"), "w"))
+        json.dump([{"token": "a1", "sample_token": "samp1", "instance_token": "inst1",
+                    "attribute_token": "", "translation": [1.0, 0.0, 1.5],
+                    "size": [0.8, 1.2, 0.9], "rotation": [1.0, 0.0, 0.0, 0.0],
+                    "prev": "", "next": "", "num_lidar_pts": 2, "num_radar_pts": 0}],
+                  open(os.path.join(ver, "sample_annotation.json"), "w"))
+        json.dump({"train/000001": {
+            "Rtilt": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            "boxes": [{"cls": "chair", "centroid": [0, 5, 1.5],
+                       "coeffs": [1, 1, 1], "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                       "bb2d": [50, 50, 40, 40]}]}},
+            open(os.path.join(root, "detection_meta_cache.json"), "w"))
+        json.dump({"train/img-000001": {
+            "W": 200, "H": 200,
+            "K_native": [[50, 0, 100], [0, 50, 100], [0, 0, 1]], "K_640": []}},
+            open(os.path.join(root, "intrinsics_per_frame.json"), "w"))
+
+        out = _run(["demo", root, "--names", "img-000001", "--out", od])
+        expect = ["img-000001.ply", "fake-scene_samp1.ply",
+                  "boxes_train_img-000001.ply", "preview_train_img-000001.png",
+                  "bev_points_img-000001.png", "bev_occ_img-000001.png"]
+        for f in expect:
+            assert os.path.exists(os.path.join(od, f)), f
+        assert "打开方式" in out
+
+
 def test_info_and_list_smoke():
     with tempfile.TemporaryDirectory() as td:
         json.dump({"generator": {"name": "rgbd2occ", "version": "0.9.5",

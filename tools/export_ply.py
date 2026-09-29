@@ -446,6 +446,67 @@ def mode_preview(args):
     print("共 %d 帧 -> %s" % (n_draw, out_dir))
 
 
+def _token_of(root, split, name):
+    """帧号 -> (sample_token, gts scene 目录名); 表缺失返回 (None, None)。"""
+    tb = os.path.join(root, "v1.0-sunrgbd-%s" % split)
+    try:
+        scenes = {s["token"]: s.get("name", "gts")
+                  for s in json.load(open(os.path.join(tb, "scene.json")))}
+        sm = {s["token"]: s["scene_token"]
+              for s in json.load(open(os.path.join(tb, "sample.json")))}
+        for e in json.load(open(os.path.join(tb, "sample_data.json"))):
+            if "CAM_FRONT" in e.get("filename", "") \
+                    and e["filename"].endswith(name + ".jpg"):
+                st = e["sample_token"]
+                return st, scenes.get(sm.get(st), "gts")
+    except OSError:
+        pass
+    return None, None
+
+
+def mode_demo(args):
+    """一键样例可视化: 单帧产出 点云 PLY / occ PLY / 3D 框 PLY / 标注叠加 PNG /
+    点云+occ BEV PNG —— 手工跑一整套导出命令的等价快捷方式。"""
+    from common.render_bev import render_occ_bev, render_points_bev
+    root = args.src
+    out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
+    os.makedirs(out_dir, exist_ok=True)
+    names = _split_names(args.names) or ["img-000001"]
+    for name in names:
+        num = int(name.split("-")[1])
+        bin_p = os.path.join(root, "samples", "LIDAR_TOP", args.split,
+                             name + ".pcd.bin")
+        if not os.path.exists(bin_p):
+            print("跳过 (无 bin):", bin_p)
+            continue
+        tok, scene = _token_of(root, args.split, name)
+        mode_points(argparse.Namespace(
+            src=bin_p, limit=0, names=[], out=out_dir, color="intensity",
+            with_rgb=args.rgb, raw_root=args.raw_root))
+        if tok:
+            mode_occ(argparse.Namespace(
+                src=os.path.join(root, "gts", scene, tok), limit=0, names=[],
+                out=out_dir, what="all" if args.what_all else "occupied",
+                mask="camera", voxel=0.4, zmin=-1.0))
+        mode_boxes(argparse.Namespace(
+            src=root, split=args.split, names=[name], limit=0, step=0.05,
+            out=out_dir))
+        mode_preview(argparse.Namespace(
+            src=root, split=args.split, names=[name], limit=0, out=out_dir,
+            no_2d=False, no_3d=False))
+        pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
+        render_points_bev(pts, os.path.join(out_dir, "bev_points_%s.png" % name),
+                          title="%s n=%d" % (name, len(pts)))
+        if tok:
+            with np.load(os.path.join(root, "gts", scene, tok, "labels.npz")) as d:
+                render_occ_bev(d["semantics"], d["mask_camera"],
+                               os.path.join(out_dir, "bev_occ_%s.png" % name),
+                               title="%s %s" % (name, tok[:8]))
+        print("-- %s 完成 (token=%s)" % (name, (tok or "无表")[:8]))
+    print("打开方式: *.ply 拖入 CloudCompare; *.png 直接看 "
+          "(bev_*=俯视, preview_*=原图+2D/3D框叠加)")
+
+
 def mode_info(args):
     root = args.src
     print("数据包:", os.path.abspath(root))
@@ -580,6 +641,18 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--no-2d", action="store_true", help="不画 2D gt 框")
     p.add_argument("--no-3d", action="store_true", help="不画 3D 框投影")
     p.set_defaults(handler=mode_preview)
+
+    p = sub.add_parser("demo",
+                       help="一键样例可视化: 单帧产出 点云/occ/3D框 PLY + 叠加图 + BEV")
+    p.add_argument("src", help="数据包根目录")
+    p.add_argument("--split", default="train", choices=["train", "val"])
+    p.add_argument("--names", nargs="+", default=[], help="帧选择 (默认 img-000001)")
+    p.add_argument("--out", default=None)
+    p.add_argument("--rgb", action="store_true",
+                   help="点云 PLY 着真彩色 (需 --raw-root 原始数据)")
+    p.add_argument("--raw-root", default=None)
+    p.add_argument("--what-all", action="store_true", help="occ PLY 含 free 体素")
+    p.set_defaults(handler=mode_demo)
 
 
 def main(argv=None):
