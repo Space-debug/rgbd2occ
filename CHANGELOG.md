@@ -22,6 +22,11 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- 导出表示按 _legacy 验证过的方案重构 (反馈): points=纯 RGB 点云单文件
+  (无标量场, --with-rgb 真彩); boxes=3D 框连续细管线框网格单文件 (与点云
+  分文件, CC 中同载叠加 —— 含 face 的 PLY 在 CC 按网格导入不渲染孤立顶点,
+  合并方案弃用); occ=占据体素中心语义色散点 + free 白色 1/8 抽稀分文件
+  (未知不导出, --style cube 可选立方体) —— 采纳 _legacy/export_occ_pointcloud.py
 - boxes_points 可见性修正 (反馈: "没有原始点云"): 含 face 的 PLY 在
   CloudCompare 中按网格导入、孤立顶点默认不渲染 —— 合并文件里的点云改为
   小八面体 surfel 实体化 (--point-size 0.02, 0=关闭), 真彩 RGB 回退补齐

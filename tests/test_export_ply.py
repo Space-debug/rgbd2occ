@@ -50,26 +50,32 @@ def test_ply_roundtrip():
 
 def test_points_export():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        os.makedirs(os.path.join(td, "train"))
         pts = np.array([[1, 0, 0, 0.5, 0], [2, 1, 1, 0.25, 0]], np.float32)
-        (np.array(pts, np.float32)).tofile(os.path.join(td, "img-000001.pcd.bin"))
-        out = _run(["points", td, "--out", od])
-        ply = os.path.join(od, "img-000001.ply")
+        pts.tofile(os.path.join(td, "train", "img-000001.pcd.bin"))
+        out = _run(["points", os.path.join(td, "train"), "--out", od])
+        ply = os.path.join(od, "points_train_img-000001.ply")
         assert os.path.exists(ply)
         d = export_ply.read_ply(ply)
         assert np.allclose(d["x"], [1, 2])
-        assert list(d["intensity"]) == [127, 63]        # 0.5/0.25 -> uchar 截断
-        assert list(d["red"]) == list(d["intensity"])   # intensity 灰度着色
-        assert "img-000001.ply" in out
+        assert "intensity" not in d                     # 只 xyz+RGB, 无标量场
+        assert list(d["red"]) == [127, 63]              # 亮度 -> 灰度着色
+        assert "points_train_img-000001.ply" in out
 
 
 def test_points_limit_and_names():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        os.makedirs(os.path.join(td, "train"))
         for i in (1, 2, 3):
-            np.zeros((4, 5), np.float32).tofile(os.path.join(td, "img-%06d.pcd.bin" % i))
-        _run(["points", td, "--limit", "2", "--out", od])
-        assert sorted(os.listdir(od)) == ["img-000001.ply", "img-000002.ply"]
-        _run(["points", td, "--names", "3", "--out", od])
-        assert "img-000003.ply" in os.listdir(od)
+            np.zeros((4, 5), np.float32).tofile(
+                os.path.join(td, "train", "img-%06d.pcd.bin" % i))
+        _run(["points", os.path.join(td, "train"), "--limit", "2", "--out", od])
+        assert sorted(os.listdir(od)) == ["points_train_img-000001.ply",
+                                          "points_train_img-000002.ply"]
+        _run(["points", os.path.join(td, "train"), "--names", "3", "--out", od])
+        assert sorted(os.listdir(od)) == ["points_train_img-000001.ply",
+                                          "points_train_img-000002.ply",
+                                          "points_train_img-000003.ply"]
 
 
 def test_points_with_rgb():
@@ -98,47 +104,53 @@ def test_points_with_rgb():
                                                 "img-000001.jpg"))
         _run(["points", os.path.join(root, "samples", "LIDAR_TOP", "train"),
               "--with-rgb", "--raw-root", raw, "--out", od])
-        d = export_ply.read_ply(os.path.join(od, "img-000001.ply"))
+        d = export_ply.read_ply(os.path.join(od, "points_train_img-000001.ply"))
         assert len(d["x"]) > 1
         cols = np.stack([d["red"], d["green"], d["blue"]], 1)
         assert len(np.unique(cols, axis=0)) >= 2      # 真彩色: 至少两种颜色
 
 
-def test_occ_export_occupied_default():
-    """默认 cube 风格: 每体素 8 顶点 + 6 quad, 颜色按类。"""
+def test_occ_export_legacy_default():
+    """默认 legacy 表示: occupied 语义色散点 + free 白色 1/8 抽稀 + 未知不导出。"""
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         tok_dir = os.path.join(td, "sunrgbd-train-kv1", "00b1d48e")
         os.makedirs(tok_dir)
         _synth_npz(os.path.join(tok_dir, "labels.npz"))
         out = _run(["occ", td, "--out", od])
-        ply = os.path.join(od, "sunrgbd-train-kv1_00b1d48e.ply")
-        assert os.path.exists(ply)
-        d = export_ply.read_ply(ply, with_faces=True)
-        # 默认 occupied + camera 掩膜: 3 个占据体素 (floor/wall/others), free 与不可见剔除
-        assert len(d["x"]) == 3 * 8 and len(d["faces"]) == 3 * 6
+        po = os.path.join(od, "sunrgbd-train-kv1_00b1d48e_occupied.ply")
+        pf = os.path.join(od, "sunrgbd-train-kv1_00b1d48e_free.ply")
+        assert os.path.exists(po) and os.path.exists(pf)
+        d = export_ply.read_ply(po)
+        # camera 掩膜: 3 个占据体素 (floor/wall/others); 不可见占据被剔除
+        assert len(d["x"]) == 3
         cols = {tuple(c) for c in zip(d["red"], d["green"], d["blue"])}
         assert tuple(CLASS_COLORS[5]) in cols           # floor
         assert tuple(CLASS_COLORS[12]) in cols          # wall
         assert (128, 128, 128) in cols                  # others 灰
-        assert "体素" in out
+        f = export_ply.read_ply(pf)
+        assert len(f["x"]) == 1                         # 1 个可见 free 体素 (1/8 不再抽)
+        assert list(f["red"]) == [245]                  # legacy: 白色
+        assert "体素" in out and "free" in out
 
 
-def test_occ_point_style_still_available():
+def test_occ_cube_style_still_available():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         tok_dir = os.path.join(td, "sc", "tok")
         os.makedirs(tok_dir)
         _synth_npz(os.path.join(tok_dir, "labels.npz"))
-        _run(["occ", td, "--style", "point", "--out", od])
-        d = export_ply.read_ply(os.path.join(od, "sc_tok.ply"))
-        assert len(d["x"]) == 3                         # 纯散点: 每体素 1 顶点
+        _run(["occ", td, "--style", "cube", "--out", od])
+        d = export_ply.read_ply(os.path.join(od, "sc_tok_occupied_cubes.ply"),
+                                with_faces=True)
+        assert len(d["x"]) == 3 * 8 and len(d["faces"]) == 3 * 6
 
 
 def test_occ_free_mode_and_coords():
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
         npz = os.path.join(td, "labels.npz")
         _synth_npz(npz)
-        _run(["occ", npz, "--what", "free", "--style", "point", "--out", od])
-        (ply,) = [os.path.join(od, f) for f in os.listdir(od) if f.endswith(".ply")]
+        _run(["occ", npz, "--free-sub", "1", "--out", od])
+        (ply,) = [os.path.join(od, f) for f in os.listdir(od)
+                  if f.endswith("_free.ply")]
         d = export_ply.read_ply(ply)
         assert len(d["x"]) == 1                       # 唯一可见 free 体素
         # 体素中心: idx(42,42,2) -> (42.5,42.5,2.5)*0.4 + (-40,-40,-1) = (-23,-23,0)
@@ -153,9 +165,9 @@ def test_occ_uses_npz_voxel_meta():
                             mask_lidar=mc, mask_camera=mc,
                             voxel=np.float32(1.0),
                             gmin=np.array([-100, -100, -2], np.float32))
-        _run(["occ", os.path.join(td, "labels.npz"), "--what", "occupied",
-              "--style", "point", "--out", od])
-        (ply,) = [os.path.join(od, f) for f in os.listdir(od) if f.endswith(".ply")]
+        _run(["occ", os.path.join(td, "labels.npz"), "--out", od])
+        (ply,) = [os.path.join(od, f) for f in os.listdir(od)
+                  if f.endswith("_occupied.ply")]
         d = export_ply.read_ply(ply)
         assert len(d["x"]) == 3
         # floor 体素 (100,100,2): (100.5,100.5,2.5)*1.0 + (-100,-100,-2) = (0.5, 0.5, 0.5)
@@ -199,24 +211,15 @@ def test_boxes_export():
                     "rotation": [1.0, 0.0, 0.0, 0.0],
                     "prev": "", "next": "", "num_lidar_pts": 10, "num_radar_pts": 0}],
                   open(os.path.join(ver, "sample_annotation.json"), "w"))
-        # 无 bin: 整帧跳过 (框必须并入点云, 不再产出纯线框文件)
+        # 框不再依赖 bin (点云由 points 模式单独出), 纯线框管网格
         out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
-        assert not os.listdir(od) and "无 bin" in out
-        # 有 bin: 顶点 = 2 点 + 12 边 x 8 = 98, 面 48
-        os.makedirs(os.path.join(ver, "samples", "LIDAR_TOP", "train"))
-        pts = np.array([[1, 0, 0, 0.5, 0], [2, 1, 1, 0.25, 0]], np.float32)
-        pts.tofile(os.path.join(ver, "samples", "LIDAR_TOP", "train",
-                                "img-000001.pcd.bin"))
-        out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
-        ply = os.path.join(od, "boxes_points_v1.0-fake_img-000001.ply")
+        ply = os.path.join(od, "boxes_v1.0-fake_img-000001.ply")
         assert os.path.exists(ply)
         d = export_ply.read_ply(ply, with_faces=True)
-        # 2 点 -> 2x6 surfel 顶点 + 12 边 x 8 管顶点 = 108; 面 = 2x8 + 48 = 64
-        assert len(d["x"]) == 12 + 96 and len(d["faces"]) == 16 + 48
+        # 12 边 x (8 顶点 + 4 quad) = 96 顶点 48 面; 单位四元数下长度沿 x
+        assert len(d["x"]) == 96 and len(d["faces"]) == 48
         assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
-        # surfel 全部落在点 (1,0,0)/(2,1,1) 的 point_size 邻域内
-        assert np.allclose(d["x"][:6], 1.0, atol=0.02)
-        assert "含原始点云 2 点" in out
+        assert "1 框" in out
 
 
 def test_demo_generates_full_set():
@@ -271,7 +274,8 @@ def test_demo_generates_full_set():
             open(os.path.join(root, "intrinsics_per_frame.json"), "w"))
 
         out = _run(["demo", root, "--names", "img-000001", "--out", od])
-        expect = ["boxes_points_train_img-000001.ply", "fake-scene_samp1.ply",
+        expect = ["points_train_img-000001.ply", "boxes_train_img-000001.ply",
+                  "fake-scene_samp1_occupied.ply", "fake-scene_samp1_free.ply",
                   "preview_train_img-000001.png",
                   "bev_points_img-000001.png", "bev_occ_img-000001.png"]
         for f in expect:

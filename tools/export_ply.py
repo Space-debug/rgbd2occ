@@ -30,7 +30,6 @@ from common.render_bev import CLASS_COLORS  # noqa: E402
 
 # 语义着色: 0=others 灰, 1..13 类, 17=free 浅绿 (与 BEV 质检图同源同约定)
 SEM_COLORS = [(128, 128, 128)] + list(CLASS_COLORS[1:])
-FREE_COLOR = (140, 185, 140)
 DEFAULT_OUT = "rgbd2occ_export"     # 相对当前工作目录, 运行时新建
 
 
@@ -261,12 +260,15 @@ def mode_points(args):
                 if len(xyz) != len(pts):
                     print("注: %s 重投影 %d 点 vs bin %d 点 (后端变体差异, 仅影响可视化)"
                           % (os.path.basename(bin_p), len(xyz), len(pts)))
-                inten = np.clip(rgb.mean(1), 0, 255).astype(np.uint8)
         if rgb is None:
             rgb = (np.repeat(inten[:, None], 3, 1) if args.color == "intensity"
                    else np.full((len(pts), 3), 255, np.uint8))
-        dst = os.path.join(out_dir, os.path.basename(bin_p)[:-8] + ".ply")
-        n = write_ply(dst, xyz, rgb, intensity=inten)
+        split = os.path.basename(os.path.dirname(bin_p))
+        stem = os.path.basename(bin_p)[:-8]
+        name = ("points_%s_%s" % (split, stem) if split in ("train", "val")
+                else "points_%s" % stem)
+        dst = os.path.join(out_dir, name + ".ply")
+        n = write_ply(dst, xyz, rgb)          # 只 xyz+RGB, 不附标量场
         total += n
         print("%s  %d 点" % (dst, n))
     print("共 %d 文件 %d 点 -> %s" % (len(bins), total, out_dir))
@@ -290,34 +292,40 @@ def mode_occ(args):
                 voxel = args.voxel
                 H0, W0 = sem.shape[:2]
                 gmin = np.array([-W0 * voxel / 2, -H0 * voxel / 2, args.zmin])
-        H, W, D = sem.shape
-        sel = np.zeros(sem.shape, bool)
-        if args.what in ("occupied", "all"):
-            sel |= (sem < 17) & (mask > 0)
-        if args.what in ("free", "all"):
-            sel |= (sem == 17) & (mask > 0)
-        if not sel.any():
+        # legacy 表示 (_legacy/export_occ_pointcloud.py): 体素中心散点 ——
+        # 占据=语义色, free=白 (1/8 抽稀), 未知不导出 (淹没画面)
+        occ = (sem < 17) & (mask > 0)          # 0=others(灰) 也算占据
+        free = (sem == 17) & (mask > 0)
+        if not occ.any():
             print("跳过空占据", npz_p)
             continue
-        idx = np.argwhere(sel)
-        xyz = (idx + 0.5) * voxel + gmin
-        cls = sem[sel]
-        # 调色板: 0..13 语义, 14=free (语义 17 归并到 free 行)
-        pal = np.array(SEM_COLORS + [FREE_COLOR], np.uint8)
-        rgb = pal[np.minimum(cls, 14)]
         tok = os.path.basename(os.path.dirname(npz_p))            # token 目录名
         scene = os.path.basename(os.path.dirname(os.path.dirname(npz_p)))
-        dst = os.path.join(out_dir, "%s_%s.ply" % (scene or "occ", tok))
+        stem = "%s_%s" % (scene or "occ", tok)
+
+        def _centers(sel, sub=1):
+            idx = np.argwhere(sel)[::sub]
+            return (idx + 0.5) * voxel + gmin
+
+        poc = _centers(occ)
+        rgb = np.array(SEM_COLORS, np.uint8)[sem[occ]]            # 0..13 -> 调色板
         if args.style == "cube":
-            verts, vcols, faces = _voxel_cubes(xyz, rgb, voxel * args.cube_scale)
-            n = write_ply_mesh(dst, verts, vcols, faces)
-            print("%s  %d 体素 (立方体网格, %d 顶点 %d 面)" % (dst, len(xyz), n, len(faces)))
-            total += len(xyz)
+            verts, vcols, faces = _voxel_cubes(poc, rgb, voxel * args.cube_scale)
+            dst = os.path.join(out_dir, stem + "_occupied_cubes.ply")
+            write_ply_mesh(dst, verts, vcols, faces)
+            print("%s  %d 体素 (立方体网格)" % (dst, len(poc)))
         else:
-            n = write_ply(dst, xyz, rgb)
-            total += n
-            print("%s  %d 体素" % (dst, n))
-    print("共 %d 文件 %d 体素 -> %s" % (len(npzs), total, out_dir))
+            dst = os.path.join(out_dir, stem + "_occupied.ply")
+            write_ply(dst, poc, rgb)
+            print("%s  %d 体素" % (dst, len(poc)))
+        total += len(poc)
+        if free.any():
+            pf = _centers(free, sub=max(args.free_sub, 1))
+            cf = np.full((len(pf), 3), 245, np.uint8)             # legacy: 白色
+            dstf = os.path.join(out_dir, stem + "_free.ply")
+            write_ply(dstf, pf, cf)
+            print("%s  %d free (1/%d 抽稀, 白色)" % (dstf, len(pf), args.free_sub))
+    print("共 %d 文件 %d 占据体素 -> %s" % (len(npzs), total, out_dir))
 
 
 def _box_corners(tr, quat, size):
@@ -364,24 +372,6 @@ def _edge_tube(A, B, r):
     return verts, faces
 
 
-def _points_as_octahedra(xyz, rgb, r):
-    """点 -> 小八面体 surfel (每点 6 顶点 8 面): CloudCompare 对含 face 的 PLY
-    只渲染面、不渲染孤立顶点, 点必须实体化才可见。r=0 时原样返回。"""
-    if r <= 0 or not len(xyz):
-        return xyz, rgb, []
-    n = len(xyz)
-    apex = np.array([[0, 0, r], [r, 0, 0], [0, r, 0], [-r, 0, 0],
-                     [0, -r, 0], [0, 0, -r]], np.float64)
-    verts = (xyz[:, None, :] + apex[None, :, :]).reshape(-1, 3)
-    vcols = np.repeat(rgb, 6, axis=0)
-    tris = [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1),
-            (5, 2, 1), (5, 3, 2), (5, 4, 3), (5, 1, 4)]
-    faces = []
-    for b in range(0, n * 6, 6):
-        faces.extend([[a0 + b, a1 + b, a2 + b] for a0, a1, a2 in tris])
-    return verts, vcols, faces
-
-
 def mode_boxes(args):
     ver = args.src
     if not os.path.basename(ver).startswith("v1.0-"):
@@ -416,39 +406,11 @@ def mode_boxes(args):
     by_frame = {}
     for a in sel:
         by_frame.setdefault(a["sample_token"], []).append(a)
-    cand = os.path.dirname(ver)
-    root = cand if os.path.isdir(os.path.join(cand, "samples")) else ver
     for st, alist in sorted(by_frame.items(), key=lambda kv: tok2num.get(kv[0], 0)):
         num = tok2num.get(st)
-        dst = os.path.join(out_dir, "boxes_points_%s_img-%06d.ply" % (
+        dst = os.path.join(out_dir, "boxes_%s_img-%06d.ply" % (
             os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
-        bin_p = os.path.join(root, "samples", "LIDAR_TOP", args.split,
-                             "img-%06d.pcd.bin" % num)
-        if not os.path.exists(bin_p):
-            print("跳过 (无 bin, 框必须并入点云):", bin_p)
-            continue
-        pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
-        inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
-        p_xyz, p_rgb = pts[:, :3], np.repeat(inten[:, None], 3, 1)
-        if getattr(args, "rgb", False):
-            raw_root = getattr(args, "raw_root", None)
-            if not raw_root:
-                try:
-                    from config import dataset_paths
-                    raw_root = dataset_paths("sunrgbd")["raw_root"]
-                except Exception:
-                    raw_root = None
-            if raw_root:
-                got = _regen_rgb(bin_p, raw_root)
-                if got is not None:
-                    p_xyz, p_rgb = got
-        n_pts = len(p_xyz)
-        # CC 对含 face 的 PLY 不渲染孤立顶点: 点实体化为小八面体 (可 --point-size 0 关)
-        s_xyz, s_rgb, s_faces = _points_as_octahedra(
-            p_xyz, p_rgb, getattr(args, "point_size", 0.02))
-        xyz, rgb = [s_xyz], [s_rgb]
-        faces, base = list(s_faces), len(s_xyz)
-        n_pts = len(p_xyz)
+        xyz, rgb, faces, base = [], [], [], 0
         for a in alist:
             cname = cats.get(inst.get(a["instance_token"], {}).get("category_token", ""),
                              "objects")
@@ -462,8 +424,8 @@ def mode_boxes(args):
                               for a0, a1, a2, a3 in tube])
             base += len(verts)
         n = write_ply_mesh(dst, np.concatenate(xyz), np.concatenate(rgb), faces)
-        print("%s  %d 框 (含原始点云 %d 点), %d 顶点 %d 面" % (
-            dst, len(alist), n_pts, n, len(faces)))
+        print("%s  %d 框, %d 顶点 %d 面 (与 points_*.ply 在 CC 中同载即叠加)" % (
+            dst, len(alist), n, len(faces)))
 
 
 def _rows(path):
@@ -595,14 +557,12 @@ def mode_demo(args):
             with_rgb=args.rgb, raw_root=args.raw_root))
         mode_boxes(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0,
-            radius=0.015, point_size=0.02, rgb=args.rgb,
-            raw_root=args.raw_root, out=out_dir))
+            radius=0.02, out=out_dir))
         if tok:
             mode_occ(argparse.Namespace(
                 src=os.path.join(root, "gts", scene, tok), limit=0, names=[],
-                out=out_dir, what="all" if args.what_all else "occupied",
-                mask="camera", voxel=0.4, zmin=-1.0, style="cube",
-                cube_scale=0.95))
+                out=out_dir, mask="camera", voxel=0.4, zmin=-1.0,
+                style="point", free_sub=8, cube_scale=0.95))
         mode_preview(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0, out=out_dir,
             with_3d=False))
@@ -769,34 +729,29 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--names", nargs="+", default=[], help="token / token 前缀")
     p.add_argument("--out", default=None)
-    p.add_argument("--what", choices=["occupied", "free", "all"], default="occupied",
-                   help="occupied=占据体素(默认), free=可见空体素")
     p.add_argument("--mask", choices=["camera", "lidar"], default="camera",
                    help="可见性掩膜 (默认 camera)")
     p.add_argument("--voxel", type=float, default=0.4,
                    help="体素边长 (仅旧 npz 无元数据时生效, 0.9.6+ npz 自带)")
     p.add_argument("--zmin", type=float, default=-1.0,
                    help="Z 轴下界 (仅旧 npz 无元数据时生效)")
-    p.add_argument("--style", choices=["cube", "point"], default="cube",
-                   help="cube=按类着色小立方体网格 (默认, Occup3D 风格), point=散点")
+    p.add_argument("--free-sub", type=int, default=8,
+                   help="free 体素抽稀倍数 (白色, 默认 1/8; legacy 表示)")
+    p.add_argument("--style", choices=["point", "cube"], default="point",
+                   help="point=体素中心语义色散点 (默认, legacy 验证过的表示), "
+                        "cube=占据体素立方体网格")
     p.add_argument("--cube-scale", type=float, default=0.95,
                    help="立方体边长缩放 (<1 露出格间缝, 默认 0.95)")
     p.set_defaults(handler=mode_occ)
 
     p = sub.add_parser("boxes",
-                       help="3D 框 -> 连续线框网格并入原始点云, 单文件输出")
+                       help="3D 框 -> 连续线框管网格 (与 points_*.ply 在 CC 同载叠加)")
     p.add_argument("src", help="数据包根目录或 v1.0-sunrgbd-<split> 目录")
     p.add_argument("--split", default="train", choices=["train", "val"])
     p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
     p.add_argument("--limit", type=int, default=0, help="前 N 帧")
-    p.add_argument("--radius", type=float, default=0.015,
-                   help="线框管半径, 米 (默认 0.015)")
-    p.add_argument("--point-size", type=float, default=0.02,
-                   help="并入点云的 surfel 八面体半径, 米 (默认 0.02; 0=孤立顶点, "
-                        "部分查看器不渲染)")
-    p.add_argument("--rgb", action="store_true",
-                   help="并入的点云着真彩色 (需 --raw-root 原始数据)")
-    p.add_argument("--raw-root", default=None)
+    p.add_argument("--radius", type=float, default=0.02,
+                   help="线框管半径, 米 (默认 0.02)")
     p.add_argument("--out", default=None)
     p.set_defaults(handler=mode_boxes)
 
@@ -824,7 +779,6 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--rgb", action="store_true",
                    help="点云 PLY 着真彩色 (需 --raw-root 原始数据)")
     p.add_argument("--raw-root", default=None)
-    p.add_argument("--what-all", action="store_true", help="occ PLY 含 free 体素")
     p.set_defaults(handler=mode_demo)
 
     p = sub.add_parser("diff", help="对比两份 manifest 逐帧差异 (换后端/升级转换器后回归)")

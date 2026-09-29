@@ -66,23 +66,24 @@ rgbd2occ sunrgbd occ --mode single <深度图> --fx 529.5 --fy 529.5 \
 
 ```bash
 rgbd2occ export info   <out>                              # 数据包概览
-rgbd2occ export points <out>/samples/LIDAR_TOP/train --limit 5
-rgbd2occ export points <out>/samples/LIDAR_TOP/train --with-rgb  # 重投影着真彩色
-rgbd2occ export points <out>/samples/LIDAR_TOP/train/img-000123.pcd.bin
-rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>
-rgbd2occ export occ    <out>/gts --limit 4 --what all     # 含 free 空体素
-rgbd2occ export boxes  <out> --split train --names img-000001  # 线框并入点云单文件
+rgbd2occ export points <out>/samples/LIDAR_TOP/train --limit 5 --with-rgb  # RGB点云
+rgbd2occ export boxes  <out> --split train --names img-000001  # 3D框连续线框网格
+rgbd2occ export occ    <out>/gts/sunrgbd-train-kv1/<token>  # occupied+free 两件
+rgbd2occ export occ    <out>/gts --limit 4 --style cube    # 立方体网格可选
 rgbd2occ export preview <out> --names img-000001   # 原图 + 2D gt 框 (--with-3d 加投影)
-rgbd2occ export demo   <out> --names img-000001    # 一键全套可视化 (PLY+PNG×4)
+rgbd2occ export demo   <out> --names img-000001    # 一键全套可视化
 rgbd2occ export diff   <旧manifest.json> <新manifest.json>   # 回归对比 (一致0/有差异1)
 rgbd2occ export --help          # 导出组帮助; 每个子命令亦有 --help
 python tools/read_devkit_example.py <out>   # nuScenes devkit 读取示例 (无 devkit 自动零依赖)
 ```
 
 - 产物导出为**二进制 PLY**（零第三方依赖），CloudCompare 直接拖入即可：
-  points=点云（intensity 标量场+灰度着色）、occ=体素点云（13 类语义着色，同 BEV 质检图）、
-  boxes=逐帧 3D 框彩色线框（nuScenes wlh+四元数）。坐标系=自车系 X前/Y左/Z上，
-  与 CloudCompare 默认 Z 轴向上一致；输出默认当前目录 `rgbd2occ_export/`（`--out` 可改）。
+  points=纯 RGB 点云（--with-rgb 重投影真彩）; boxes=3D 框连续细管线框网格（逐帧,
+  与 points 同载即叠加）; occ=legacy 表示 —— 占据体素中心语义色散点 + free 白色
+  1/8 抽稀各一文件（未知不导出; --style cube 可选立方体网格）。坐标系=自车系
+  X前/Y左/Z上，与 CloudCompare 默认 Z 轴向上一致；输出默认当前目录
+  `rgbd2occ_export/`（`--out` 可改）。注意: 含 face 的 PLY 在 CloudCompare 按
+  网格导入、不渲染孤立顶点 —— 因此点云与框分文件存放、同载叠加。
 - `pip install .` 后以上均以 `rgbd2occ` 命令调起（未安装时 `python main.py ...` 等价）。
 - devkit 挂载：表目录名 `v1.0-sunrgbd-<split>` 遵循 nuScenes `v1.0-*` 约定，
   `NuScenes(version="v1.0-sunrgbd-train", dataroot=<out>)` 可直接加载
