@@ -507,6 +507,40 @@ def mode_demo(args):
           "(bev_*=俯视, preview_*=原图+2D/3D框叠加)")
 
 
+def mode_diff(args):
+    """两份 manifest 逐帧对比: 一致/不同/仅一侧; md5 缺失时回退 count+bytes。
+    退出码: 全一致 0, 有差异 1 (便于脚本化回归判断)。"""
+    ma = json.load(open(args.a, encoding="utf-8"))
+    mb = json.load(open(args.b, encoding="utf-8"))
+
+    def _hdr(m):
+        g = m.get("generator", {})
+        return "%s %s @ %s (%s)" % (g.get("name", "?"), g.get("version", "?"),
+                                    g.get("commit", "?"), g.get("time", "?"))
+
+    def _sig(e):
+        return e.get("md5") or "%s:%s" % (e.get("count"), e.get("bytes"))
+
+    ea, eb = ma.get("entries", {}), mb.get("entries", {})
+    ka, kb = set(ea), set(eb)
+    same, changed = [], []
+    for k in sorted(ka & kb):
+        (changed if _sig(ea[k]) != _sig(eb[k]) else same).append(k)
+    print("A: %s\nB: %s" % (_hdr(ma), _hdr(mb)))
+    print("共有 %d 帧: 一致 %d, 不同 %d (%.2f%%); 仅A %d, 仅B %d"
+          % (len(ka & kb), len(same), len(changed),
+             100.0 * len(changed) / max(len(ka & kb), 1), len(ka - kb), len(kb - ka)))
+    for k in changed[:args.max_show]:
+        print("  ~ %s: %s -> %s" % (k, _sig(ea[k])[:12], _sig(eb[k])[:12]))
+    if len(changed) > args.max_show:
+        print("  ... 共 %d 帧不同 (仅展示前 %d)" % (len(changed), args.max_show))
+    for k in sorted(ka - kb)[:args.max_show]:
+        print("  - 仅A: %s" % k)
+    for k in sorted(kb - ka)[:args.max_show]:
+        print("  + 仅B: %s" % k)
+    sys.exit(1 if (changed or ka != kb) else 0)
+
+
 def mode_info(args):
     root = args.src
     print("数据包:", os.path.abspath(root))
@@ -653,6 +687,12 @@ def add_subparsers(sub, with_registry=False):
     p.add_argument("--raw-root", default=None)
     p.add_argument("--what-all", action="store_true", help="occ PLY 含 free 体素")
     p.set_defaults(handler=mode_demo)
+
+    p = sub.add_parser("diff", help="对比两份 manifest 逐帧差异 (换后端/升级转换器后回归)")
+    p.add_argument("a", help="manifest_<产物>.json 路径 (旧)")
+    p.add_argument("b", help="manifest_<产物>.json 路径 (新)")
+    p.add_argument("--max-show", type=int, default=20, help="最多展示的差异行数")
+    p.set_defaults(handler=mode_diff)
 
 
 def main(argv=None):

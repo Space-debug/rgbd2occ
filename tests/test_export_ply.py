@@ -259,6 +259,41 @@ def test_demo_generates_full_set():
         assert "打开方式" in out
 
 
+def _run_exit(argv):
+    """跑 CLI, 返回 (输出, 退出码)。"""
+    code = 0
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            export_ply.main(argv)
+        except SystemExit as e:
+            code = e.code or 0
+    return buf.getvalue(), code
+
+
+def test_diff_manifest():
+    """manifest 对比: 相同退出 0; 有差异退出 1 并列出 changed/仅一侧。"""
+    with tempfile.TemporaryDirectory() as td:
+        base = {"generator": {"name": "rgbd2occ", "version": "1", "commit": "c",
+                              "time": "t"},
+                "entries": {"train/img-000001": {"md5": "aaa"},
+                            "train/img-000002": {"md5": "bbb"},
+                            "train/img-000003": {"md5": "ccc"}}}
+        pa = os.path.join(td, "a.json")
+        json.dump(base, open(pa, "w"))
+        pb = os.path.join(td, "b.json")
+        json.dump({"generator": base["generator"],
+                   "entries": {"train/img-000001": {"md5": "aaa"},
+                               "train/img-000002": {"md5": "XXX"},
+                               "train/img-000004": {"md5": "ddd"}}}, open(pb, "w"))
+        out, code = _run_exit(["diff", pa, pb])
+        assert code == 1
+        assert "一致 1, 不同 1" in out and "仅A 1, 仅B 1" in out
+        assert "img-000002" in out and "img-000003" in out and "img-000004" in out
+        out2, code2 = _run_exit(["diff", pa, pa])
+        assert code2 == 0 and "不同 0" in out2
+
+
 def test_info_and_list_smoke():
     with tempfile.TemporaryDirectory() as td:
         json.dump({"generator": {"name": "rgbd2occ", "version": "0.9.5",
