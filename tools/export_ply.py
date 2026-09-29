@@ -1,0 +1,419 @@
+# -*- coding: utf-8 -*-
+"""CloudCompare 导出: bin / labels.npz / 3D 框 -> PLY (rgbd2occ export 子命令)。
+
+把转换产物导出为 CloudCompare 可直接打开的 .ply (binary_little_endian):
+  点云   samples/LIDAR_TOP/<split>/img-XXXXXX.pcd.bin -> 带亮度着色的点云
+  占据GT gts/<scene>/<token>/labels.npz               -> 按语义类着色的体素点云
+  3D框   v1.0-sunrgbd-<split>/sample_annotation.json  -> 逐帧彩色线框点云
+坐标系 = 自车系 X前/Y左/Z上, 与 CloudCompare 默认 Z 轴向上一致, 打开即是正视角。
+
+统一入口 (推荐):
+  rgbd2occ export points D:/Datasets/sunrgbd_nuscenes_v3/samples/LIDAR_TOP/train --limit 5
+  rgbd2occ export occ D:/Datasets/sunrgbd_nuscenes_v3/gts --limit 4 --what all
+  rgbd2occ export boxes D:/Datasets/sunrgbd_nuscenes_v3 --split train --names img-000001
+  rgbd2occ export info D:/Datasets/sunrgbd_nuscenes_v3
+本文件也可独立运行 (等价): python tools/export_ply.py points|occ|boxes|info ...
+输出默认写到当前目录新建的 rgbd2occ_export/ (--out 可改)。
+"""
+import argparse
+import colorsys
+import hashlib
+import json
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from common.render_bev import CLASS_COLORS  # noqa: E402
+
+# 语义着色: 0=others 灰, 1..13 类, 17=free 浅绿 (与 BEV 质检图同源同约定)
+SEM_COLORS = [(128, 128, 128)] + list(CLASS_COLORS[1:])
+FREE_COLOR = (140, 185, 140)
+DEFAULT_OUT = "rgbd2occ_export"     # 相对当前工作目录, 运行时新建
+
+
+# ---------------- PLY 写出/读回 ----------------
+
+def write_ply(path, xyz, rgb, intensity=None):
+    """binary_little_endian PLY: float32 x,y,z + uchar red,green,blue
+    (+ 点云线附带 uchar intensity 标量场, 供 CloudCompare 按标量重新着色)。"""
+    n = len(xyz)
+    fields = [("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+              ("red", "u1"), ("green", "u1"), ("blue", "u1")]
+    if intensity is not None:
+        fields.append(("intensity", "u1"))
+    hdr = ["ply", "format binary_little_endian 1.0", "element vertex %d" % n,
+           "property float x", "property float y", "property float z",
+           "property uchar red", "property uchar green", "property uchar blue"]
+    if intensity is not None:
+        hdr.append("property uchar intensity")
+    hdr.append("end_header")
+    arr = np.zeros(n, dtype=fields)
+    arr["x"], arr["y"], arr["z"] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+    arr["red"], arr["green"], arr["blue"] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    if intensity is not None:
+        arr["intensity"] = intensity
+    with open(path, "wb") as f:
+        f.write(("\n".join(hdr) + "\n").encode("ascii"))
+        arr.tofile(f)
+    return n
+
+
+def read_ply(path):
+    """读回本工具写出的 PLY (测试/校验用): 返回 {属性名: (N,) 数组} dict。"""
+    props, n = [], 0
+    with open(path, "rb") as f:
+        while True:
+            line = f.readline().decode("ascii").strip()
+            if line.startswith("element vertex"):
+                n = int(line.split()[-1])
+            elif line.startswith("property"):
+                props.append(line.split()[1:])          # [类型, 名]
+            elif line == "end_header":
+                break
+        dt = np.dtype([(name, {"float": "<f4", "uchar": "u1"}[t]) for t, name in props])
+        arr = np.frombuffer(f.read(dt.itemsize * n), dt)
+    return {name: arr[name].copy() for _, name in props}
+
+
+def _hash_color(name):
+    """类别名 -> 稳定区分色 (黄金比例散布色相; 13 类内的走 CLASS_COLORS)。"""
+    if name in CLS_13:
+        return CLASS_COLORS[CLS_13.index(name) + 1]
+    h = int(hashlib.md5(name.encode("utf-8")).hexdigest()[:8], 16)
+    r, g, b = colorsys.hsv_to_rgb((h * 0.61803398875) % 1.0, 0.75, 1.0)
+    return (int(r * 255), int(g * 255), int(b * 255))
+
+
+CLS_13 = ["bed", "books", "ceiling", "chair", "floor", "furniture", "objects",
+          "picture", "sofa", "table", "tv", "wall", "window"]
+
+
+# ---------------- 输入收集 ----------------
+
+def _split_names(names):
+    """--names 归一: 兼容逗号分隔的单词 ("img-001,img-002" 在部分 shell 下是单参数)。"""
+    return [t for arg in names for t in arg.split(",") if t]
+
+
+def _want(name, names):
+    """--names 过滤: 接受 img-000123 / 123 / 文件名子串 / token 前缀。"""
+    if not names:
+        return True
+    for t in names:
+        if t.isdigit():
+            if name == "img-%06d" % int(t):
+                return True
+        elif t in name:
+            return True
+    return False
+
+
+def _collect_bins(src, limit, names):
+    """points 输入: bin 文件或含 bin 的目录 -> 排序后的路径列表。"""
+    if os.path.isfile(src):
+        return [src]
+    bins = sorted(f for f in os.listdir(src) if f.endswith(".pcd.bin"))
+    bins = [os.path.join(src, f) for f in bins if _want(f[:-8], names)]
+    return bins[:limit] if limit else bins
+
+
+def _collect_npz(src, limit, names):
+    """occ 输入: labels.npz 文件 / token 目录 / scene 目录 / gts 根 -> 路径列表。"""
+    if os.path.isfile(src):
+        return [src]
+    direct = os.path.join(src, "labels.npz")
+    if os.path.exists(direct):
+        return [direct]
+    found = []
+    for sub in sorted(os.listdir(src)):
+        d = os.path.join(src, sub)
+        if not os.path.isdir(d):
+            continue
+        p = os.path.join(d, "labels.npz")
+        if os.path.exists(p):
+            if _want(sub, names):
+                found.append(p)
+            continue
+        for tok in sorted(os.listdir(d)):          # gts 根: 再下钻一层 scene/token
+            p2 = os.path.join(d, tok, "labels.npz")
+            if os.path.exists(p2) and _want(tok, names):
+                found.append(p2)
+    return found[:limit] if limit else found
+
+
+# ---------------- 导出模式 ----------------
+
+def mode_points(args):
+    out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
+    os.makedirs(out_dir, exist_ok=True)
+    names = _split_names(args.names)
+    bins = _collect_bins(args.src, args.limit, names)
+    total = 0
+    for bin_p in bins:
+        pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
+        if not len(pts):
+            print("跳过空点云", bin_p)
+            continue
+        xyz = pts[:, :3]
+        inten = np.clip(pts[:, 3] * 255.0, 0, 255).astype(np.uint8)
+        if args.color == "intensity":
+            rgb = np.repeat(inten[:, None], 3, 1)
+        else:
+            rgb = np.full((len(pts), 3), 255, np.uint8)
+        dst = os.path.join(out_dir, os.path.basename(bin_p)[:-8] + ".ply")
+        n = write_ply(dst, xyz, rgb, intensity=inten)
+        total += n
+        print("%s  %d 点" % (dst, n))
+    print("共 %d 文件 %d 点 -> %s" % (len(bins), total, out_dir))
+
+
+def mode_occ(args):
+    out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
+    os.makedirs(out_dir, exist_ok=True)
+    npzs = _collect_npz(args.src, args.limit, _split_names(args.names))
+    total = 0
+    for npz_p in npzs:
+        with np.load(npz_p) as d:
+            sem = d["semantics"]
+            mask = (d.get("mask_camera") if args.mask == "camera" else d.get("mask_lidar"))
+            mask = np.ones_like(sem) if mask is None else mask
+        H, W, D = sem.shape
+        gmin = np.array([-W * args.voxel / 2, -H * args.voxel / 2, args.zmin])
+        sel = np.zeros(sem.shape, bool)
+        if args.what in ("occupied", "all"):
+            sel |= (sem < 17) & (mask > 0)
+        if args.what in ("free", "all"):
+            sel |= (sem == 17) & (mask > 0)
+        if not sel.any():
+            print("跳过空占据", npz_p)
+            continue
+        idx = np.argwhere(sel)
+        xyz = (idx + 0.5) * args.voxel + gmin
+        cls = sem[sel]
+        # 调色板: 0..13 语义, 14=free (语义 17 归并到 free 行)
+        pal = np.array(SEM_COLORS + [FREE_COLOR], np.uint8)
+        rgb = pal[np.minimum(cls, 14)]
+        tok = os.path.basename(os.path.dirname(npz_p))            # token 目录名
+        scene = os.path.basename(os.path.dirname(os.path.dirname(npz_p)))
+        dst = os.path.join(out_dir, "%s_%s.ply" % (scene or "occ", tok))
+        n = write_ply(dst, xyz, rgb)
+        total += n
+        print("%s  %d 体素" % (dst, n))
+    print("共 %d 文件 %d 体素 -> %s" % (len(npzs), total, out_dir))
+
+
+def _box_corners(tr, quat, size):
+    """nuScenes 框 -> 8 角点 (自车系)。size=[w,l,h], 角序同 devkit Box.corners。"""
+    w, l, h = size
+    q = np.array(quat, np.float64)          # (w, x, y, z)
+    q = q / np.linalg.norm(q)
+    R = np.array([
+        [1 - 2 * (q[2] ** 2 + q[3] ** 2), 2 * (q[1] * q[2] - q[0] * q[3]),
+         2 * (q[1] * q[3] + q[0] * q[2])],
+        [2 * (q[1] * q[2] + q[0] * q[3]), 1 - 2 * (q[1] ** 2 + q[3] ** 2),
+         2 * (q[2] * q[3] - q[0] * q[1])],
+        [2 * (q[1] * q[3] - q[0] * q[2]), 2 * (q[2] * q[3] + q[0] * q[1]),
+         1 - 2 * (q[1] ** 2 + q[2] ** 2)]])
+    loc = np.array([[sx * l / 2, sy * w / 2, sz * h / 2]
+                    for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    return np.asarray(tr, np.float64) + loc @ R.T
+
+
+_EDGES = [(0, 1), (0, 2), (1, 3), (2, 3), (4, 5), (4, 6), (5, 7), (6, 7),
+          (0, 4), (1, 5), (2, 6), (3, 7)]
+
+
+def _norm_frame(t):
+    """帧号归一: 123 / img-123 -> img-000123。"""
+    return ("img-%06d" % int(t)) if t.isdigit() else t
+
+
+def mode_boxes(args):
+    ver = args.src
+    if not os.path.basename(ver).startswith("v1.0-"):
+        ver = os.path.join(ver, "v1.0-sunrgbd-%s" % args.split)
+    rd = lambda n: json.load(open(os.path.join(ver, n), encoding="utf-8"))
+    anns = rd("sample_annotation.json")
+    inst = {i["token"]: i for i in rd("instance.json")}
+    cats = {c["token"]: c["name"].split(".")[-1] for c in rd("category.json")}
+    samples = {s["token"]: s for s in rd("sample.json")}
+    # sample_token -> 帧号 (CAM_FRONT sample_data 文件名反查)
+    tok2num = {}
+    for e in rd("sample_data.json"):
+        if "CAM_FRONT" in e.get("filename", ""):
+            tok2num[e["sample_token"]] = int(
+                e["filename"].split("img-")[1].split(".")[0])
+
+    names = _split_names(args.names)
+    if names:
+        want = {_norm_frame(t) for t in names}
+        sel = [a for a in anns
+               if ("img-%06d" % tok2num.get(a["sample_token"], -1)) in want]
+    else:
+        nums = sorted({tok2num[a["sample_token"]] for a in anns})
+        keep = set(nums[:args.limit] if args.limit else nums)
+        sel = [a for a in anns if tok2num.get(a["sample_token"]) in keep]
+    if not sel:
+        print("无匹配框 (ver=%s, names=%s)" % (ver, args.names))
+        return
+
+    out_dir = args.out or os.path.join(os.getcwd(), DEFAULT_OUT)
+    os.makedirs(out_dir, exist_ok=True)
+    by_frame = {}
+    for a in sel:
+        by_frame.setdefault(a["sample_token"], []).append(a)
+    for st, alist in sorted(by_frame.items(), key=lambda kv: tok2num.get(kv[0], 0)):
+        num = tok2num.get(st)
+        pts_all, rgb_all = [], []
+        for a in alist:
+            cname = cats.get(inst.get(a["instance_token"], {}).get("category_token", ""),
+                             "objects")
+            col = _hash_color(cname)
+            corners = _box_corners(a["translation"], a["rotation"], a["size"])
+            for i, j in _EDGES:
+                seg = corners[j] - corners[i]
+                k = max(2, int(np.linalg.norm(seg) / args.step) + 1)
+                t = np.linspace(0, 1, k)[:, None]
+                pts_all.append(corners[i] + seg * t)
+                rgb_all.append(np.tile(np.array(col, np.uint8), (k, 1)))
+        dst = os.path.join(out_dir, "boxes_%s_img-%06d.ply" % (
+            os.path.basename(ver).replace("v1.0-sunrgbd-", ""), num))
+        n = write_ply(dst, np.concatenate(pts_all), np.concatenate(rgb_all))
+        print("%s  %d 框 %d 线框点" % (dst, len(alist), n))
+
+
+def _rows(path):
+    return json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+
+
+def mode_info(args):
+    root = args.src
+    print("数据包:", os.path.abspath(root))
+    for name in ("manifest_nuscenes", "manifest_occ", "manifest_detection"):
+        m = _rows(os.path.join(root, name + ".json"))
+        if m:
+            g, p = m.get("generator", {}), m.get("params", {})
+            print("%s: %s %s @ %s (%s), backend=%s" % (
+                name, g.get("name", "?"), g.get("version", "?"),
+                g.get("commit", "?"), g.get("time", "?"), p.get("backend", "?")))
+    for name in ("qc_report_nuscenes", "qc_report_occ"):
+        q = _rows(os.path.join(root, name + ".json"))
+        if q:
+            print("%s: errors=%s warnings=%s frames=%s" % (
+                name, len(q.get("errors", [])), len(q.get("warnings", [])),
+                q.get("frames", "?")))
+    for ver in sorted(d for d in os.listdir(root) if d.startswith("v1.0-")):
+        vd = os.path.join(root, ver)
+        scenes = _rows(os.path.join(vd, "scene.json"))
+        print("%s: sample=%d scene=%d ann=%d" % (
+            ver, len(_rows(os.path.join(vd, "sample.json"))), len(scenes),
+            len(_rows(os.path.join(vd, "sample_annotation.json")))))
+    samples = os.path.join(root, "samples", "LIDAR_TOP")
+    if os.path.isdir(samples):
+        for sp in sorted(os.listdir(samples)):
+            sd = os.path.join(samples, sp)
+            if os.path.isdir(sd):
+                print("samples/LIDAR_TOP/%s: %d bin" % (sp, len(os.listdir(sd))))
+    gts = os.path.join(root, "gts")
+    if os.path.isdir(gts):
+        n_scenes, n_npz = 0, 0
+        for sub in os.listdir(gts):
+            sd = os.path.join(gts, sub)
+            if os.path.isdir(sd):
+                n_scenes += 1
+                n_npz += sum(os.path.exists(os.path.join(sd, t, "labels.npz"))
+                             for t in os.listdir(sd))
+        print("gts: %d scene, %d labels.npz" % (n_scenes, n_npz))
+
+
+# ---------------- 数据集注册表 ----------------
+
+def mode_list(_):
+    from datasets import DATASETS
+    from config import dataset_paths
+    print("已注册数据集/产物 (datasets/__init__.py):")
+    for ds, products in DATASETS.items():
+        print("  %-12s -> %s" % (ds, ", ".join(products)))
+    try:
+        print("config 路径:", dataset_paths("sunrgbd"))
+    except Exception as e:
+        print("config 不可用:", e)
+    print("转换:   rgbd2occ convert <数据集> <产物> [参数原样透传]")
+    print("        (等价简写: rgbd2occ <数据集> <产物> ...)")
+    print("导出:   rgbd2occ export points|occ|boxes|info (--help 查看)")
+
+
+def mode_convert(args):
+    from datasets import DATASETS
+    import importlib
+    if args.dataset not in DATASETS:
+        sys.exit("未注册的数据集: %s (可选: %s)" % (args.dataset, ", ".join(DATASETS)))
+    if args.product not in DATASETS[args.dataset]:
+        sys.exit("%s 不支持产物 %s (可选: %s)"
+                 % (args.dataset, args.product, ", ".join(DATASETS[args.dataset])))
+    module_name, entry = DATASETS[args.dataset][args.product]
+    getattr(importlib.import_module(module_name), entry)(args.passthrough)
+
+
+def add_subparsers(sub, with_registry=False):
+    """把导出/信息子命令挂到给定 subparsers (叶子经 set_defaults(handler=...) 分发)。
+    with_registry=True 时附带 list/convert (本文件独立运行时用; rgbd2occ 顶层
+    自带这两者, export 组只挂 points/occ/boxes/info)。"""
+    if with_registry:
+        p = sub.add_parser("list", help="列举已注册数据集/产物/路径")
+        p.set_defaults(handler=mode_list)
+
+        p = sub.add_parser("convert", help="调用数据集转换入口 (参数原样透传)")
+        p.add_argument("dataset")
+        p.add_argument("product")
+        p.add_argument("passthrough", nargs=argparse.REMAINDER)
+        p.set_defaults(handler=mode_convert)
+
+    p = sub.add_parser("points", help="LIDAR_TOP bin -> PLY 点云")
+    p.add_argument("src", help="bin 文件或含 bin 的目录")
+    p.add_argument("--limit", type=int, default=0, help="只取排序后前 N 个")
+    p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
+    p.add_argument("--out", default=None, help="输出目录 (默认 ./rgbd2occ_export)")
+    p.add_argument("--color", choices=["intensity", "none"], default="intensity",
+                   help="intensity=按亮度灰度着色 (默认), none=白色")
+    p.set_defaults(handler=mode_points)
+
+    p = sub.add_parser("occ", help="labels.npz -> PLY 体素点云 (按类着色)")
+    p.add_argument("src", help="npz 文件 / token 目录 / scene 目录 / gts 根")
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--names", nargs="+", default=[], help="token / token 前缀")
+    p.add_argument("--out", default=None)
+    p.add_argument("--what", choices=["occupied", "free", "all"], default="occupied",
+                   help="occupied=占据体素(默认), free=可见空体素")
+    p.add_argument("--mask", choices=["camera", "lidar"], default="camera",
+                   help="可见性掩膜 (默认 camera)")
+    p.add_argument("--voxel", type=float, default=0.4, help="体素边长 (默认 0.4)")
+    p.add_argument("--zmin", type=float, default=-1.0, help="Z 轴下界 (默认 -1)")
+    p.set_defaults(handler=mode_occ)
+
+    p = sub.add_parser("boxes", help="sample_annotation 3D 框 -> PLY 彩色线框")
+    p.add_argument("src", help="数据包根目录或 v1.0-sunrgbd-<split> 目录")
+    p.add_argument("--split", default="train", choices=["train", "val"])
+    p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
+    p.add_argument("--limit", type=int, default=0, help="前 N 帧")
+    p.add_argument("--step", type=float, default=0.05, help="线框采样步长(米)")
+    p.add_argument("--out", default=None)
+    p.set_defaults(handler=mode_boxes)
+
+    p = sub.add_parser("info", help="数据包概览统计")
+    p.add_argument("src", help="数据包根目录")
+    p.set_defaults(handler=mode_info)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    add_subparsers(sub, with_registry=True)
+    args = ap.parse_args(argv)
+    args.handler(args)
+
+
+if __name__ == "__main__":
+    main()

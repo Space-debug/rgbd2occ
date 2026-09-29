@@ -1,0 +1,162 @@
+# -*- coding: utf-8 -*-
+"""export_ply 工具测试: PLY 写出/读回一致性 + 各模式冒烟 (零依赖可跑)。"""
+import contextlib
+import io
+import json
+import os
+import sys
+import tempfile
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools import export_ply  # noqa: E402
+from common.render_bev import CLASS_COLORS  # noqa: E402
+
+
+def _run(argv):
+    """跑 CLI 并捕获 stdout, 返回输出文本。"""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        export_ply.main(argv)
+    return buf.getvalue()
+
+
+def _synth_npz(path):
+    """合成一帧 occ: floor(5) + wall(12) 可见占据 + 可见 free + 未知。"""
+    sem = np.full((200, 200, 16), 17, np.uint8)
+    mc = np.zeros((200, 200, 16), np.uint8)
+    sem[100, 100, 2] = 5                       # floor
+    sem[100, 101, 2] = 12                      # wall
+    sem[100, 102, 3] = 0                       # others (可见未标注)
+    sem[42, 42, 2] = 17                        # 可见 free
+    sem[7, 7, 1] = 4                           # 占据但不可见 -> 默认掩膜下应被剔除
+    mc[100, 100, 2] = mc[100, 101, 2] = mc[100, 102, 3] = mc[42, 42, 2] = 1
+    np.savez_compressed(path, semantics=sem, mask_lidar=mc, mask_camera=mc)
+    return sem
+
+
+def test_ply_roundtrip():
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "t.ply")
+        xyz = np.array([[1.0, -2.0, 3.5], [0.0, 0.0, 0.0]], np.float64)
+        rgb = np.array([[255, 0, 0], [10, 20, 30]], np.uint8)
+        export_ply.write_ply(p, xyz, rgb, intensity=np.array([128, 0], np.uint8))
+        d = export_ply.read_ply(p)
+        assert np.allclose(d["x"], xyz[:, 0]) and np.allclose(d["z"], xyz[:, 2])
+        assert list(d["red"]) == [255, 10] and list(d["blue"]) == [0, 30]
+        assert "intensity" in d
+
+
+def test_points_export():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        pts = np.array([[1, 0, 0, 0.5, 0], [2, 1, 1, 0.25, 0]], np.float32)
+        (np.array(pts, np.float32)).tofile(os.path.join(td, "img-000001.pcd.bin"))
+        out = _run(["points", td, "--out", od])
+        ply = os.path.join(od, "img-000001.ply")
+        assert os.path.exists(ply)
+        d = export_ply.read_ply(ply)
+        assert np.allclose(d["x"], [1, 2])
+        assert list(d["intensity"]) == [127, 63]        # 0.5/0.25 -> uchar 截断
+        assert list(d["red"]) == list(d["intensity"])   # intensity 灰度着色
+        assert "img-000001.ply" in out
+
+
+def test_points_limit_and_names():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        for i in (1, 2, 3):
+            np.zeros((4, 5), np.float32).tofile(os.path.join(td, "img-%06d.pcd.bin" % i))
+        _run(["points", td, "--limit", "2", "--out", od])
+        assert sorted(os.listdir(od)) == ["img-000001.ply", "img-000002.ply"]
+        _run(["points", td, "--names", "3", "--out", od])
+        assert "img-000003.ply" in os.listdir(od)
+
+
+def test_occ_export_occupied_default():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        tok_dir = os.path.join(td, "sunrgbd-train-kv1", "00b1d48e")
+        os.makedirs(tok_dir)
+        _synth_npz(os.path.join(tok_dir, "labels.npz"))
+        out = _run(["occ", td, "--out", od])
+        ply = os.path.join(od, "sunrgbd-train-kv1_00b1d48e.ply")
+        assert os.path.exists(ply)
+        d = export_ply.read_ply(ply)
+        # 默认 occupied + camera 掩膜: 3 个占据体素 (floor/wall/others), free 与不可见剔除
+        assert len(d["x"]) == 3
+        pal = np.array([[(128, 128, 128)], [tuple(CLASS_COLORS[5])],
+                        [tuple(CLASS_COLORS[12])]], np.uint8)
+        got = np.stack([d["red"], d["green"], d["blue"]], 1)
+        # floor 体素 (100,100) -> CLASS_COLORS[5], wall (100,101) -> CLASS_COLORS[12]
+        assert any(np.array_equal(g, pal[1][0]) for g in got)
+        assert any(np.array_equal(g, pal[2][0]) for g in got)
+        assert any(np.array_equal(g, pal[0][0]) for g in got)   # others 灰
+        assert "体素" in out
+
+
+def test_occ_free_mode_and_coords():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        npz = os.path.join(td, "labels.npz")
+        _synth_npz(npz)
+        _run(["occ", npz, "--what", "free", "--out", od])
+        (ply,) = [os.path.join(od, f) for f in os.listdir(od) if f.endswith(".ply")]
+        d = export_ply.read_ply(ply)
+        assert len(d["x"]) == 1                       # 唯一可见 free 体素
+        # 体素中心: idx(42,42,2) -> (42.5,42.5,2.5)*0.4 + (-40,-40,-1) = (-23,-23,0)
+        assert np.allclose([d["x"][0], d["y"][0], d["z"][0]], [-23.0, -23.0, 0.0], atol=1e-4)
+
+
+def test_boxes_export():
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as od:
+        ver = os.path.join(td, "v1.0-fake")
+        os.makedirs(ver)
+        cat_t, inst_t, samp_t = "cat1", "inst1", "samp1"
+        json.dump([{"token": cat_t, "name": "chair.indoor", "description": ""}],
+                  open(os.path.join(ver, "category.json"), "w"))
+        json.dump([{"token": samp_t, "timestamp": 0, "prev": "", "next": "",
+                    "scene_token": None}],
+                  open(os.path.join(ver, "sample.json"), "w"))
+        json.dump([{"token": "sd1", "sample_token": samp_t, "ego_pose_token": "sd1",
+                    "calibrated_sensor_token": "cs1", "timestamp": 0,
+                    "fileformat": "jpg", "is_key_frame": True, "height": 530,
+                    "width": 730, "filename": "samples/CAM_FRONT/train/img-000001.jpg",
+                    "prev": "", "next": "", "sensor_modality": "camera"}],
+                  open(os.path.join(ver, "sample_data.json"), "w"))
+        json.dump([{"token": inst_t, "category_token": cat_t, "nbr_annotations": 1,
+                    "first_annotation_token": "a1", "last_annotation_token": "a1"}],
+                  open(os.path.join(ver, "instance.json"), "w"))
+        json.dump([{"token": "a1", "sample_token": samp_t, "instance_token": inst_t,
+                    "attribute_token": "", "translation": [1.0, 2.0, 0.5],
+                    "size": [0.8, 1.2, 0.9],
+                    "rotation": [1.0, 0.0, 0.0, 0.0],
+                    "prev": "", "next": "", "num_lidar_pts": 10, "num_radar_pts": 0}],
+                  open(os.path.join(ver, "sample_annotation.json"), "w"))
+        out = _run(["boxes", ver, "--names", "img-000001", "--out", od])
+        ply = os.path.join(od, "boxes_v1.0-fake_img-000001.ply")
+        assert os.path.exists(ply)
+        d = export_ply.read_ply(ply)
+        # 12 条棱 x>=2 点; 单位四元数下角点 = tr ± (l/2, w/2, h/2)
+        assert len(d["x"]) >= 24
+        assert max(d["x"]) - min(d["x"]) >= 1.2 - 1e-3      # 长度沿 x
+        assert "chair" in out or "1 框" in out
+
+
+def test_info_and_list_smoke():
+    with tempfile.TemporaryDirectory() as td:
+        json.dump({"generator": {"name": "rgbd2occ", "version": "0.9.5",
+                                 "commit": "d2861bb", "time": "t"},
+                   "params": {"backend": "gpu"}, "frames": 1, "entries": {},
+                   "product": "x"},
+                  open(os.path.join(td, "manifest_nuscenes.json"), "w"))
+        json.dump([{"token": "s"}], open(os.path.join(td, "v1.0-x.json"), "w"))
+        out = _run(["info", td])
+        assert "rgbd2occ" in out and "v1.0-x" in out
+    out = _run(["list"])
+    assert "sunrgbd" in out and "occ" in out
+
+
+def test_convert_unknown_dataset_exits():
+    try:
+        _run(["convert", "nope", "occ"])
+        assert False, "应退出"
+    except SystemExit:
+        pass
