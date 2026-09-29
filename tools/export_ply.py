@@ -499,15 +499,14 @@ def mode_preview(args):
         Rt = _M_ego2cam.T @ np.asarray(rec["Rtilt"], np.float64).T  # 重力系->ego
         K = meta["K_native"]
         n2 = n3 = 0
-        if not args.no_2d:
-            for b in rec["boxes"]:
-                if not b.get("bb2d"):
-                    continue
-                x, y, w, h = b["bb2d"]
-                d.rectangle([x, y, x + w, y + h], outline=(0, 220, 0), width=2)
-                d.text((x + 2, y + 2), b["cls"], fill=(0, 220, 0))
-                n2 += 1
-        if not args.no_3d:
+        for b in rec["boxes"]:
+            if not b.get("bb2d"):
+                continue
+            x, y, w, h = b["bb2d"]
+            d.rectangle([x, y, x + w, y + h], outline=(0, 220, 0), width=2)
+            d.text((x + 2, y + 2), b["cls"], fill=(0, 220, 0))
+            n2 += 1
+        if args.with_3d:
             for b in rec["boxes"]:
                 tr = Rt @ np.asarray(b["centroid"], np.float64)
                 Re = Rt @ np.asarray(b["basis"], np.float64)
@@ -576,7 +575,7 @@ def mode_demo(args):
                 cube_scale=0.95))
         mode_preview(argparse.Namespace(
             src=root, split=args.split, names=[name], limit=0, out=out_dir,
-            no_2d=False, no_3d=False))
+            with_3d=False))
         pts = np.fromfile(bin_p, np.float32).reshape(-1, 5)
         render_points_bev(pts, os.path.join(out_dir, "bev_points_%s.png" % name),
                           title="%s n=%d" % (name, len(pts)))
@@ -773,14 +772,14 @@ def add_subparsers(sub, with_registry=False):
     p.set_defaults(handler=mode_info)
 
     p = sub.add_parser("preview",
-                       help="标注叠加可视化: 相机图 + 2D gt 框 + 3D 框投影 -> PNG")
+                       help="2D gt 框叠加相机图 -> PNG (--with-3d 可加 3D 框投影)")
     p.add_argument("src", help="数据包根目录 (需已跑 convert sunrgbd detection)")
     p.add_argument("--split", default="train", choices=["train", "val"])
     p.add_argument("--names", nargs="+", default=[], help="帧选择: img-000123 或 123")
     p.add_argument("--limit", type=int, default=0, help="前 N 帧")
     p.add_argument("--out", default=None)
-    p.add_argument("--no-2d", action="store_true", help="不画 2D gt 框")
-    p.add_argument("--no-3d", action="store_true", help="不画 3D 框投影")
+    p.add_argument("--with-3d", action="store_true",
+                   help="附加 3D 框投影线框 (默认只画 2D gt 框)")
     p.set_defaults(handler=mode_preview)
 
     p = sub.add_parser("demo",

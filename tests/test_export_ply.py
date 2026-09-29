@@ -356,8 +356,7 @@ def test_preview_renders_2d3d():
                     "--names", "img-000001", "--out", od])
         png = os.path.join(od, "preview_train_img-000001.png")
         assert os.path.exists(png) and os.path.getsize(png) > 0
-        assert "2D框 1, 3D框 1" in out
-
-        out2 = _run(["preview", td, "--split", "train", "--no-2d", "--no-3d",
+        assert "2D框 1, 3D框 0" in out            # 默认只画 2D
+        out2 = _run(["preview", td, "--split", "train", "--with-3d",
                      "--out", od])
-        assert "2D框 0, 3D框 0" in out2
+        assert "2D框 1, 3D框 1" in out2

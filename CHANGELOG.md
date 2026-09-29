@@ -22,6 +22,10 @@
   定期日志; 接入点云/occ/检测三线批量循环; doctor 加速项报告 tqdm
 - occ 导出重构 (反馈修正): 占据体素由散点改为按类着色的小立方体网格
   (--style cube 默认, Occup3D 风格, --cube-scale 控制格间缝; point 散点保留可选)
+- preview 改为默认只画 2D gt 框 (反馈: 3D 框投影对 2D 图像无必要),
+  --with-3d 可选叠加; 2D 框边缘准确性实测: 原始坐标 vs MATLAB 1-based 修正
+  (-1px) 放大 3x 无可分辨差异, 边缘松散源自官方 2D 标注本身 (诊断图见
+  sunrgbd_viz/diag_2d)
 - boxes 再修正 (反馈): 删除"纯线框"独立导出路径 —— 框必须并入原始点云,
   单文件输出 boxes_points_*; demo 同帧产出 纯点云 PLY + 点云加框 PLY 两件
 - boxes 线框重构 (反馈修正): 12 条边由离散采样点改为连续细四棱管网格
